@@ -14,6 +14,7 @@ class CommandOutput(NamedTuple):
     prompt: str
     command: str
     output: str
+    status: str  # "free", "running", or "interactive"
 
 
 class PromptVerificationError(Exception):
@@ -197,44 +198,16 @@ def wait_for_command_completion(
     last_output = None
     while time.time() - start_time < timeout:
         time.sleep(poll_interval)
-        content = _capture_pane(session_name)
-        lines = content.rstrip("\n").split("\n")
 
-        # Find all prompt line indices
-        prompt_lines = []
-        for i, line in enumerate(lines):
-            if PROMPT_ARROW in line:
-                prompt_lines.append((i, line))
-
-        if not prompt_lines:
+        result = get_last_command(session_name)
+        if result is None:
             continue
 
-        # Check if the last prompt has no command after it (command completed)
-        last_prompt_idx, last_prompt_line = prompt_lines[-1]
-        parts = last_prompt_line.split(PROMPT_ARROW, 1)
-        after_arrow = parts[1].strip() if len(parts) > 1 else ""
-        tokens = after_arrow.split()
-
-        # Skip directory and optional git info
-        cmd_start = 1
-        if len(tokens) > 1 and tokens[1].startswith("git:("):
-            cmd_start = 2
-        remaining = tokens[cmd_start:] if len(tokens) > cmd_start else []
-
-        if not remaining:
-            # Empty prompt - command finished
-            # Output is between the prompt with command and the new empty prompt
-            if len(prompt_lines) >= 2:
-                second_last_idx, _ = prompt_lines[-2]
-                output_lines = lines[second_last_idx + 1 : last_prompt_idx]
-                output = "\n".join(output_lines).strip()
-                return output
-            else:
-                # Only one prompt line, no output to return
-                return ""
+        if result.status == "free":
+            return result.output
 
         # Command still running - store output for potential return
-        last_output = "\n".join(lines[last_prompt_idx:]).strip()
+        last_output = result.output
 
     return last_output  # Return last captured output on timeout
 
@@ -320,16 +293,18 @@ def get_last_command(session_name: str) -> CommandOutput | None:
     last_idx, last_prompt, last_command = prompt_indices[-1]
     if last_command:
         idx, prompt, command = last_idx, last_prompt, last_command
+        status = "running"
     elif len(prompt_indices) < 2:
         return None
     else:
         idx, prompt, command = prompt_indices[-2]
+        status = "free"
 
     # Output is everything from this prompt line to the end
     output_lines = lines[idx:]
     output = "\n".join(output_lines)
 
-    return CommandOutput(prompt=prompt, command=command, output=output)
+    return CommandOutput(prompt=prompt, command=command, output=output, status=status)
 
 
 def main():
@@ -344,7 +319,10 @@ def main():
         print("No command found", file=sys.stderr)
         sys.exit(1)
 
-    print(result.output)
+    # print(result.prompt)
+    # print(result.command)
+    # print(result.output)
+    print(result.status)
 
 
 if __name__ == "__main__":
