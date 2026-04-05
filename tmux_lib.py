@@ -1,41 +1,45 @@
 # tmux_lib.py
 
-import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from typing import NamedTuple
 
 # This special prompt arrow is used to reliably find command prompts.
-PROMPT_ARROW = '__>'
+PROMPT_ARROW = "__>"
+
 
 class CommandOutput(NamedTuple):
     prompt: str
     command: str
     output: str
 
+
 class PromptVerificationError(Exception):
     """Raised when terminal prompt verification fails."""
+
     pass
+
 
 # PS1 prompt to be set in the tmux session.
 TMUX_PS1 = r"$(kube_ps1)%(?:%{%}%1{__>%} :%{%}%1{__>%} ) %{%}%c%{%} "
 
+
 def create_tmux_session(session_name: str) -> bool:
     """
     Create a new detached tmux session with predefined settings and PS1.
+    Attaches to existing session if one already exists.
     Args:
         session_name: Name for the tmux session
     Returns:
-        True if session was created successfully, False otherwise
+        True if session was created/attached successfully, False otherwise
     """
-    # Create a new detached session
+    # Create a new detached session, or attach if it already exists
     create_result = subprocess.run(
-        ['tmux', 'new-session', '-d', '-s', session_name],
+        ["tmux", "new-session", "-Ad", "-s", session_name],
         capture_output=True,
-        text=True
+        text=True,
     )
     if create_result.returncode != 0:
         print(f"Failed to create tmux session: {create_result.stderr}", file=sys.stderr)
@@ -43,27 +47,26 @@ def create_tmux_session(session_name: str) -> bool:
 
     # Set scrollback buffer size
     subprocess.run(
-        ['tmux', 'set-option', '-g', 'history-limit', '250000'],
+        ["tmux", "set-option", "-g", "history-limit", "250000"],
         capture_output=True,
-        text=True
+        text=True,
     )
 
     # Enable mouse mode
     subprocess.run(
-        ['tmux', 'set-option', '-g', 'mouse', 'on'],
-        capture_output=True,
-        text=True
+        ["tmux", "set-option", "-g", "mouse", "on"], capture_output=True, text=True
     )
 
     # Set the PS1 prompt
     ps1_export = f"export PS1='{TMUX_PS1}'\n"
     subprocess.run(
-        ['tmux', 'send-keys', '-t', session_name, ps1_export],
+        ["tmux", "send-keys", "-t", session_name, ps1_export],
         capture_output=True,
-        text=True
+        text=True,
     )
 
     return True
+
 
 def _capture_pane(session_name: str) -> str:
     """
@@ -74,12 +77,13 @@ def _capture_pane(session_name: str) -> str:
         The captured pane content as a string
     """
     result = subprocess.run(
-        ['tmux', 'capture-pane', '-p', '-t', session_name],
+        ["tmux", "capture-pane", "-p", "-S", "-", "-t", session_name],
         capture_output=True,
         text=True,
-        check=True
+        check=True,
     )
     return result.stdout
+
 
 def get_n_last_lines(session_name: str, lines: int = 10) -> str:
     """
@@ -91,12 +95,12 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
         The last N lines as a string
     """
     content = _capture_pane(session_name)
-    content_lines = content.split('\n')
+    content_lines = content.split("\n")
 
     # Strip control characters from each line
     cleaned_lines = []
     for line in content_lines:
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', line)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", line)
         cleaned_lines.append(cleaned)
 
     # Find first and last non-empty lines to trim padding
@@ -113,9 +117,10 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
             break
 
     # Get content between first and last non-empty lines (inclusive)
-    trimmed = cleaned_lines[first_content:last_content + 1]
+    trimmed = cleaned_lines[first_content : last_content + 1]
 
-    return '\n'.join(trimmed[-lines:])
+    return "\n".join(trimmed[-lines:])
+
 
 def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
     """
@@ -127,9 +132,9 @@ def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
         True if the string is found, False otherwise
     """
     content = _capture_pane(session_name)
-    lines = content.rstrip('\n').split('\n')
+    lines = content.rstrip("\n").split("\n")
     # Check the last non-empty line for prompt
-    last_line = ''
+    last_line = ""
     for line in reversed(lines):
         if line.strip():
             last_line = line
@@ -137,10 +142,9 @@ def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
 
     return verify_string in last_line
 
+
 def send_to_terminal(
-    session_name: str,
-    command: str,
-    prompt_verify_string: str | None = None
+    session_name: str, command: str, prompt_verify_string: str | None = None
 ) -> bool:
     """
     Send a command to the terminal without waiting for completion.
@@ -153,18 +157,18 @@ def send_to_terminal(
     """
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
-            session_name=session_name,
-            verify_string=prompt_verify_string
+            session_name=session_name, verify_string=prompt_verify_string
         ):
             return False
 
     # In tmux, send-keys sends keys, so no need to escape newlines
     subprocess.run(
-        ['tmux', 'send-keys', '-t', session_name, command],
+        ["tmux", "send-keys", "-t", session_name, command],
         capture_output=True,
-        text=True
+        text=True,
     )
     return True
+
 
 def send_interrupt(session_name: str) -> None:
     """
@@ -173,15 +177,12 @@ def send_interrupt(session_name: str) -> None:
         session_name: Name of the tmux session
     """
     subprocess.run(
-        ['tmux', 'send-keys', '-t', session_name, 'C-c'],
-        capture_output=True,
-        text=True
+        ["tmux", "send-keys", "-t", session_name, "C-c"], capture_output=True, text=True
     )
 
+
 def wait_for_command_completion(
-    session_name: str,
-    timeout: float = 30,
-    poll_interval: float = 0.001
+    session_name: str, timeout: float = 30, poll_interval: float = 0.001
 ) -> str | None:
     """
     Wait for a command to complete by polling for a new empty prompt.
@@ -193,34 +194,50 @@ def wait_for_command_completion(
         Command output if completed, None if timeout
     """
     start_time = time.time()
+    last_output = None
     while time.time() - start_time < timeout:
         time.sleep(poll_interval)
         content = _capture_pane(session_name)
-        result = get_last_command(content)
-        if result is None:
-            continue
-        # Check if command finished (new prompt appeared with no command)
-        lines = content.rstrip('\n').split('\n')
-        for line in reversed(lines):
-            if not line.strip():
-                continue
-            # If last non-empty line has prompt arrow but no command after it,
-            # the command has completed
-            if PROMPT_ARROW in line:
-                parts = line.split(PROMPT_ARROW, 1)
-                after_arrow = parts[1].strip() if len(parts) > 1 else ''
-                tokens = after_arrow.split()
-                # Skip directory and optional git info
-                cmd_start = 1
-                if len(tokens) > 1 and tokens[1].startswith('git:('):
-                    cmd_start = 2
-                remaining = tokens[cmd_start:] if len(tokens) > cmd_start else []
-                if not remaining:
-                    # Command finished, return output
-                    return result.output
-            break
+        lines = content.rstrip("\n").split("\n")
 
-    return None  # Timeout
+        # Find all prompt line indices
+        prompt_lines = []
+        for i, line in enumerate(lines):
+            if PROMPT_ARROW in line:
+                prompt_lines.append((i, line))
+
+        if not prompt_lines:
+            continue
+
+        # Check if the last prompt has no command after it (command completed)
+        last_prompt_idx, last_prompt_line = prompt_lines[-1]
+        parts = last_prompt_line.split(PROMPT_ARROW, 1)
+        after_arrow = parts[1].strip() if len(parts) > 1 else ""
+        tokens = after_arrow.split()
+
+        # Skip directory and optional git info
+        cmd_start = 1
+        if len(tokens) > 1 and tokens[1].startswith("git:("):
+            cmd_start = 2
+        remaining = tokens[cmd_start:] if len(tokens) > cmd_start else []
+
+        if not remaining:
+            # Empty prompt - command finished
+            # Output is between the prompt with command and the new empty prompt
+            if len(prompt_lines) >= 2:
+                second_last_idx, _ = prompt_lines[-2]
+                output_lines = lines[second_last_idx + 1 : last_prompt_idx]
+                output = "\n".join(output_lines).strip()
+                return output
+            else:
+                # Only one prompt line, no output to return
+                return ""
+
+        # Command still running - store output for potential return
+        last_output = "\n".join(lines[last_prompt_idx:]).strip()
+
+    return last_output  # Return last captured output on timeout
+
 
 def execute_in_terminal(
     session_name: str,
@@ -228,7 +245,7 @@ def execute_in_terminal(
     prompt_verify_string: str | None = None,
     sync: bool = True,
     timeout: float = 30.0,
-    poll_interval: float = 0.001
+    poll_interval: float = 0.001,
 ) -> str | None:
     """
     Execute a command in the terminal.
@@ -246,31 +263,33 @@ def execute_in_terminal(
     """
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
-            session_name=session_name,
-            verify_string=prompt_verify_string):
+            session_name=session_name, verify_string=prompt_verify_string
+        ):
             raise PromptVerificationError(
                 f"Prompt does not contain '{prompt_verify_string}'"
             )
 
     subprocess.run(
-        ['tmux', 'send-keys', '-t', session_name, command + '\n'],
+        ["tmux", "send-keys", "-t", session_name, command + "\n"],
         capture_output=True,
-        text=True
+        text=True,
     )
     if not sync:
-        return ''
+        return ""
 
     return wait_for_command_completion(session_name, timeout, poll_interval)
 
-def get_last_command(terminal_output: str) -> CommandOutput | None:
+
+def get_last_command(session_name: str) -> CommandOutput | None:
     """
     Extract the last command and its output from terminal output.
     Args:
-        terminal_output: Raw terminal output string
+        session_name: Name of the tmux session
     Returns:
         CommandOutput with prompt, command, and output, or None if not found
     """
-    lines = terminal_output.strip().split('\n')
+    terminal_output = _capture_pane(session_name)
+    lines = terminal_output.strip().split("\n")
 
     # Find all prompt line indices (lines containing the prompt arrow)
     prompt_indices = []
@@ -279,18 +298,18 @@ def get_last_command(terminal_output: str) -> CommandOutput | None:
             continue
         # Split on the arrow and take everything after it
         parts = line.split(PROMPT_ARROW, 1)
-        after_arrow = parts[1] if len(parts) > 1 else ''
+        after_arrow = parts[1] if len(parts) > 1 else ""
         # Extract prompt (directory/git info) and command
         tokens = after_arrow.strip().split()
         if not tokens:
-            prompt_indices.append((i, '', ''))
+            prompt_indices.append((i, "", ""))
             continue
         # Find where command starts (after dir and optional git:(branch))
         cmd_start = 1
-        if len(tokens) > 1 and tokens[1].startswith('git:('):
+        if len(tokens) > 1 and tokens[1].startswith("git:("):
             cmd_start = 2
-        prompt = PROMPT_ARROW + ' ' + ' '.join(tokens[:cmd_start])
-        command = ' '.join(tokens[cmd_start:])
+        prompt = PROMPT_ARROW + " " + " ".join(tokens[:cmd_start])
+        command = " ".join(tokens[cmd_start:])
         prompt_indices.append((i, prompt, command))
 
     if not prompt_indices:
@@ -308,28 +327,25 @@ def get_last_command(terminal_output: str) -> CommandOutput | None:
 
     # Output is everything from this prompt line to the end
     output_lines = lines[idx:]
-    output = '\n'.join(output_lines)
+    output = "\n".join(output_lines)
 
     return CommandOutput(prompt=prompt, command=command, output=output)
 
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: tmux_lib.py <file> | -", file=sys.stderr)
+        print("Usage: tmux_lib.py <session_name>", file=sys.stderr)
         sys.exit(1)
 
-    source = sys.argv[1]
-    if source == '-':
-        terminal_output = sys.stdin.read()
-    else:
-        with open(source, encoding='utf-8', errors='replace') as f:
-            terminal_output = f.read()
+    session_name = sys.argv[1]
 
-    result = get_last_command(terminal_output)
+    result = get_last_command(session_name)
     if result is None:
         print("No command found", file=sys.stderr)
         sys.exit(1)
 
     print(result.output)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
