@@ -9,6 +9,9 @@ from typing import NamedTuple
 # This special prompt arrow is used to reliably find command prompts.
 PROMPT_ARROW = "__>"
 
+# Seconds to wait before confirming interactive mode to avoid false positives
+INTERACTIVE_DETECTION_DELAY = 1.0
+
 
 class CommandOutput(NamedTuple):
     prompt: str
@@ -84,6 +87,30 @@ def _capture_pane(session_name: str) -> str:
         check=True,
     )
     return result.stdout
+
+
+def _detect_interactive_mode(terminal_output: str) -> str | None:
+    """
+    Check terminal output for hints of interactive programs.
+    Returns the program name if detected, None otherwise.
+    """
+    lines = terminal_output.strip().split("\n")
+    if not lines:
+        return None
+
+    last_line = lines[-1]
+
+    if last_line.strip().endswith(":") and ":" in last_line:
+        if PROMPT_ARROW not in last_line:
+            return "less"
+
+    if all(line.startswith("~") for line in lines[-5:] if line.strip()):
+        return "vim"
+
+    if last_line.startswith("^") or "GNU nano" in terminal_output:
+        return "nano"
+
+    return None
 
 
 def get_n_last_lines(session_name: str, lines: int = 10) -> str:
@@ -184,7 +211,7 @@ def send_interrupt(session_name: str) -> None:
 
 def wait_for_command_completion(
     session_name: str, timeout: float = 30, poll_interval: float = 0.001
-) -> str | None:
+) -> CommandOutput | None:
     """
     Wait for a command to complete by polling for a new empty prompt.
     Args:
@@ -192,10 +219,15 @@ def wait_for_command_completion(
         timeout: Maximum time to wait for command completion (seconds)
         poll_interval: How often to check for completion (seconds)
     Returns:
-        Command output if completed, None if timeout
+        CommandOutput with status "free" if completed, "interactive" if
+        interactive program detected, or None if timeout
     """
     start_time = time.time()
     last_output = None
+
+    interactive_hint_detected_at: float | None = None
+    interactive_hint_output: str | None = None
+
     while time.time() - start_time < timeout:
         time.sleep(poll_interval)
 
@@ -204,12 +236,37 @@ def wait_for_command_completion(
             continue
 
         if result.status == "free":
-            return result.output
+            return result
 
-        # Command still running - store output for potential return
+        hint = _detect_interactive_mode(result.output)
+        current_time = time.time()
+
+        if hint:
+            if interactive_hint_detected_at is None:
+                interactive_hint_detected_at = current_time
+                interactive_hint_output = result.output
+            elif (
+                current_time - interactive_hint_detected_at
+                >= INTERACTIVE_DETECTION_DELAY
+            ):
+                if result.output == interactive_hint_output:
+                    return CommandOutput(
+                        prompt=result.prompt,
+                        command=result.command,
+                        output=result.output,
+                        status="interactive",
+                    )
+        else:
+            interactive_hint_detected_at = None
+            interactive_hint_output = None
+
         last_output = result.output
 
-    return last_output  # Return last captured output on timeout
+    if last_output is not None:
+        return CommandOutput(
+            prompt="", command="", output=last_output, status="timeout"
+        )
+    return None
 
 
 def execute_in_terminal(
@@ -219,7 +276,7 @@ def execute_in_terminal(
     sync: bool = True,
     timeout: float = 30.0,
     poll_interval: float = 0.001,
-) -> str | None:
+) -> str | CommandOutput | None:
     """
     Execute a command in the terminal.
     Args:
@@ -230,8 +287,7 @@ def execute_in_terminal(
         timeout: Maximum time to wait for command completion (seconds)
         poll_interval: How often to check for completion (seconds)
     Returns:
-        If sync=True: Full output including prompts, or None if verification
-            failed or timeout
+        If sync=True: CommandOutput with output and status, or None if timeout
         If sync=False: Empty string on success, None if verification failed
     """
     if prompt_verify_string is not None:

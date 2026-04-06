@@ -68,7 +68,7 @@ def execute_command(
     sync: bool = True,
     timeout: float = 30.0,
     prompt_verify_string: str | None = None,
-) -> str:
+) -> dict:
     """
     Execute a command in the terminal and wait for it to complete.
     Use this for commands where you need to see the output before proceeding.
@@ -79,11 +79,12 @@ def execute_command(
         command: Command to execute (newline will be appended automatically)
         timeout: Maximum seconds to wait for completion (default: 30)
         prompt_verify_string: If provided, only execute if the current prompt
-            contains this string. Useful to ensure the terminal is ready.
+            contains this string. Useful to ensure you're targeting the correct cluster.
     Returns:
-        The command output if successful, "timeout" if the command didn't
-        complete within the timeout period, or "prompt_mismatch" if prompt
-        verification failed
+        Dictionary with 'prompt', 'command', 'output', and 'status' keys.
+        Status is "free" if completed, "interactive" if an interactive program
+        was detected, "timeout" if the command didn't complete within the timeout
+        period, or "prompt_mismatch" if prompt verification failed.
     """
     try:
         result = tmux_lib.execute_in_terminal(
@@ -93,13 +94,22 @@ def execute_command(
             sync=sync,
             timeout=timeout,
         )
-        return result if result is not None else "timeout"
+        if result is None:
+            return {"prompt": "", "command": "", "output": "", "status": "timeout"}
+        if isinstance(result, str):
+            return {"prompt": "", "command": "", "output": result, "status": "free"}
+        return {
+            "prompt": result.prompt,
+            "command": result.command,
+            "output": result.output,
+            "status": result.status,
+        }
     except tmux_lib.PromptVerificationError:
-        return "prompt_mismatch"
+        return {"prompt": "", "command": "", "output": "", "status": "prompt_mismatch"}
 
 
 @mcp.tool()
-def wait_for_completion(session_name: str, timeout: float = 30.0) -> str:
+def wait_for_completion(session_name: str, timeout: float = 30.0) -> dict:
     """
     Wait for a previously sent command to complete.
     Use this after send_command or after execute_command times out - when you need
@@ -109,11 +119,20 @@ def wait_for_completion(session_name: str, timeout: float = 30.0) -> str:
         session_name: Name of the tmux session
         timeout: Maximum seconds to wait for completion (default: 30)
     Returns:
-        The command output if completed, "timeout" if the command didn't
-        complete within the timeout period
+        Dictionary with 'prompt', 'command', 'output', and 'status' keys.
+        Status is "free" if completed, "interactive" if an interactive program
+        (e.g., less, vim, nano) was detected, or "timeout" if the command didn't
+        complete within the timeout period.
     """
     result = tmux_lib.wait_for_command_completion(session_name, timeout)
-    return result if result is not None else "timeout"
+    if result is None:
+        return {"prompt": "", "command": "", "output": "", "status": "timeout"}
+    return {
+        "prompt": result.prompt,
+        "command": result.command,
+        "output": result.output,
+        "status": result.status,
+    }
 
 
 @mcp.tool()
