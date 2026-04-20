@@ -21,7 +21,7 @@ Tmux MCP is a Model Context Protocol (MCP) server that provides tools for intera
 1. Clone this repository:
 
    ```bash
-   git clone <repository-url>
+   git clone git@github.com:tomklino/tmux-mcp.git
    cd tmux-mcp
    ```
 
