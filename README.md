@@ -4,42 +4,96 @@ Tmux MCP is a Model Context Protocol (MCP) server that provides tools for intera
 
 ## Features
 
-- **Execute Commands**: Run commands in a tmux session and wait for completion.
-- **Capture Output**: Read the last N lines of terminal output.
-- **Safety Verification**: Use `prompt_verify_string` to ensure commands are executed in the correct context (e.g., specific directory or Kubernetes context).
-- **Interactive Detection**: Automatically detects when a terminal enters an interactive state (e.g., `vim`, `nano`, `less`).
-- **Command Monitoring**: Wait for asynchronous commands to finish and retrieve their output.
-- **Send and Interrupt**: Send strings to the terminal without execution (for user review) or send interrupts (Ctrl+C).
+* **Execute Commands**: Run commands in a tmux session and wait for completion.
+* **Capture Output**: Read the last N lines of terminal output.
+* **Safety Verification**: Use `prompt_verify_string` to ensure commands are executed in the correct context (e.g., specific directory or Kubernetes context).
+* **Interactive Detection**: Automatically detects when a terminal enters an interactive state (e.g., `vim`, `nano`, `less`).
+* **Command Monitoring**: Wait for asynchronous commands to finish and retrieve their output.
+* **Send and Interrupt**: Send strings to the terminal without execution (for user review) or send interrupts (Ctrl+C).
 
 ## Prerequisites
 
-- Python 3.10+
-- `tmux` installed on the system.
+* Python 3.10+
+* `tmux` installed on the system.
 
 ## Installation
 
 1. Clone this repository:
+
    ```bash
    git clone <repository-url>
    cd tmux-mcp
    ```
 
 2. Install dependencies (it uses `mcp` library):
+
    ```bash
    pip install mcp
    ```
 
-## Usage
+### Client Configuration
 
-### Starting the MCP Server
+To use the server with an MCP client, add it to your configuration. Make sure to provide the absolute path to the `tmux_mcp.py` script.
 
-You can run the MCP server directly:
+It's recommended to copy or reference the `AGENTS.md` file contents to the
+agent's instructions as it helps the agent use the safety guards in situations
+where they are required.
+
+#### Claude Code
+
+You can add the MCP server to Claude Code using the CLI:
 
 ```bash
-python3 tmux_mcp.py
+claude mcp add tmux python3 /absolute/path/to/tmux-mcp/tmux_mcp.py
 ```
 
-To use it with an MCP client (like Claude Desktop or another agent harness), add it to your configuration.
+Or add the following to your `~/.claude.json` within your project's `mcpServers` object:
+
+```json
+"tmux": {
+  "type": "stdio",
+  "command": "python3",
+  "args": ["/absolute/path/to/tmux-mcp/tmux_mcp.py"],
+  "env": {}
+}
+```
+
+#### OpenCode
+
+Add the following to your OpenCode configuration file located at `~/.config/opencode/opencode.json` under the `"mcp"` key:
+
+```json
+"mcp": {
+  "tmux": {
+    "type": "local",
+    "command": ["python3", "/absolute/path/to/tmux-mcp/tmux_mcp.py"],
+    "enabled": true
+  }
+}
+```
+
+#### Pi Agent
+
+First, install the MCP adapter:
+
+```bash
+pi install npm:pi-mcp-adapter
+```
+
+Then, add the following to your `~/.pi/agent/mcp.json` or project-specific `.pi/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "tmux": {
+      "command": "python3",
+      "args": ["/absolute/path/to/tmux-mcp/tmux_mcp.py"]
+    }
+  }
+}
+```
+
+## Usage
 
 ### CLI Utility
 
@@ -49,6 +103,30 @@ The project includes a CLI utility `tmux_cli.py` for managing sessions:
 # Create a new session with the custom prompt used by the MCP
 ./tmux_cli.py new my-session
 ```
+
+After creating the session, you can intract with it yourself or tell the
+agent to interact with it as well. For example:
+
+```
+use the tmux session "my-session" to inspect the output of my last command
+and explain why it's not working.
+```
+
+Or
+
+```
+use the tmux session "my-session" to check if there are any pods in a
+crashloop. If there are any, describe them to find the reason.
+```
+
+Or
+
+```
+in the session "my-session" I typed in a `kubectl` command. Extend it
+with custom columns to print out the name of the pod and the image
+it runs.
+```
+
 
 ## Tools Provided
 
@@ -67,9 +145,10 @@ The `prompt_verify_string` argument in `execute_command` and `send_command` is a
 
 Example:
 If you want to ensure you are in a specific directory or Kubernetes context:
+
 ```python
-# Only executes if the prompt indicates we are in the 'prod' context
-execute_command(session_name="work", command="ls", prompt_verify_string="prod-cluster")
+# This call will fail if the prompt in the terminal is showing the prod cluster
+execute_command(session_name="work", command="kubectl delete pod -l app=important", prompt_verify_string="staging-cluster")
 ```
 
 ## Internal Implementation
