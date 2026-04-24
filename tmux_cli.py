@@ -22,8 +22,14 @@ TESTABLE_FUNCTIONS = [
 
 def cmd_new(args):
     """Create a new tmux session and attach to it."""
-    if tmux_lib.create_tmux_session(args.session_name):
-        print(f"Tmux session ready: {args.session_name}")
+    # Check if session name is a valid color
+    color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
+    
+    if tmux_lib.create_tmux_session(args.session_name, color=color):
+        if color:
+            print(f"Tmux session ready with {color} status bar: {args.session_name}")
+        else:
+            print(f"Tmux session ready: {args.session_name}")
         # Attach to the session
         subprocess.run(["tmux", "attach-session", "-t", args.session_name])
     else:

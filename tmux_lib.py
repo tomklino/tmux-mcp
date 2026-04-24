@@ -6,11 +6,41 @@ import sys
 import time
 from typing import NamedTuple
 
+from colors import VALID_COLORS
+
 # This special prompt arrow is used to reliably find command prompts.
 PROMPT_ARROW = "__>"
 
 # Seconds to wait before confirming interactive mode to avoid false positives
 INTERACTIVE_DETECTION_DELAY = 1.0
+
+
+def is_valid_color(name: str) -> bool:
+    """Check if a name is a valid color.
+
+    Args:
+        name: The name to check
+    Returns:
+        True if the name is a valid color, False otherwise
+    """
+    return name.lower() in VALID_COLORS
+
+
+def _set_status_bar_color(session_name: str, color: str) -> bool:
+    """Set the tmux status bar background color.
+
+    Args:
+        session_name: Name of the tmux session
+        color: Color name to set
+    Returns:
+        True if successful, False otherwise
+    """
+    result = subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "status-style", f"bg={color}"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 class CommandOutput(NamedTuple):
@@ -30,12 +60,13 @@ class PromptVerificationError(Exception):
 TMUX_PS1 = r"$(kube_ps1)%(?:%{%}%1{__>%} :%{%}%1{__>%} ) %{%}%c%{%} "
 
 
-def create_tmux_session(session_name: str) -> bool:
+def create_tmux_session(session_name: str, color: str | None = None) -> bool:
     """
     Create a new detached tmux session with predefined settings and PS1.
     Attaches to existing session if one already exists.
     Args:
         session_name: Name for the tmux session
+        color: Optional color name to set the status bar background
     Returns:
         True if session was created/attached successfully, False otherwise
     """
@@ -60,6 +91,10 @@ def create_tmux_session(session_name: str) -> bool:
     subprocess.run(
         ["tmux", "set-option", "-g", "mouse", "on"], capture_output=True, text=True
     )
+
+    # Set status bar color if a valid color is provided
+    if color and is_valid_color(color):
+        _set_status_bar_color(session_name, color)
 
     # Set the PS1 prompt
     ps1_export = f"export PS1='{TMUX_PS1}'\n"
