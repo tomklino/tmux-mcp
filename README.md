@@ -2,6 +2,8 @@
 
 Tmux MCP is a Model Context Protocol (MCP) server that provides tools for interacting with `tmux` terminal sessions. It allows an AI agent to read terminal output, execute commands, and monitor the state of a terminal session in a safe and controlled manner.
 
+<img width="1080" height="540" alt="tmux-mcp-again" src="https://github.com/user-attachments/assets/c909f390-04e5-4569-9999-8578c40ef26c" />
+
 ## Features
 
 * **Execute Commands**: Run commands in a tmux session and wait for completion.
