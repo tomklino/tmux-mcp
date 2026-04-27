@@ -37,3 +37,12 @@ commands:
 * If verification fails, the tool returns `"prompt_mismatch"` instead
   of executing
 
+### Extending commands
+
+When asked to extend an already typed command in tmux, send only the remainder,
+not the full command. This is because the command text is already in the
+terminal input buffer and sending the full command duplicates it and causes
+errors.
+
+How to apply: Before sending, check `get_last_lines` to see what is already
+typed on the prompt line, then send only the delta.
