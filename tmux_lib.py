@@ -57,7 +57,7 @@ class PromptVerificationError(Exception):
 
 
 # PS1 prompt to be set in the tmux session.
-TMUX_PS1 = r"%{$(kube_ps1)%}%(?:%{%}%1{__>%} :%{%}%1{__>%} ) %{%}%c%{%} "
+TMUX_PS1 = r"$(kube_ps1)%(?:%{%}%1{__>%} :%{%}%1{__>%} ) %{%}%c%{%} "
 
 
 def create_tmux_session(session_name: str, color: str | None = None) -> bool:
