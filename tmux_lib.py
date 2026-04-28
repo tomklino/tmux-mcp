@@ -135,9 +135,11 @@ def _detect_interactive_mode(terminal_output: str) -> str | None:
 
     last_line = lines[-1]
 
-    if last_line.strip().endswith(":") and ":" in last_line:
-        if PROMPT_ARROW not in last_line:
-            return "less"
+    if last_line.strip() == ":" and PROMPT_ARROW not in last_line:
+        return "less"
+
+    if last_line.strip() == "(END)" and PROMPT_ARROW not in last_line:
+        return "less"
 
     if all(line.startswith("~") for line in lines[-5:] if line.strip()):
         return "vim"
