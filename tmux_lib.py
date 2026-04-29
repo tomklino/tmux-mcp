@@ -226,9 +226,10 @@ def send_to_terminal(
         ):
             return False
 
-    # In tmux, send-keys sends keys, so no need to escape newlines
+    # Sending command surrounded by bracket-paste control characters to
+    # prevent accidental execution
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, command],
+        ["tmux", "send-keys", "-t", session_name, f"\x1b[200~{command}\x1b[201~"],
         capture_output=True,
         text=True,
     )
