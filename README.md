@@ -119,8 +119,8 @@ The project includes a CLI utility `tmux_cli.py` for managing sessions:
 ./tmux_cli.py new green
 ```
 
-[!TIP]
-Choose a color for the name of the terminal to color code the terminal status line
+> [!TIP]
+> Choose a color for the name of the terminal to color code the terminal status line
 
 
 After creating the session, you can intract with it yourself or tell the
