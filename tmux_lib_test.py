@@ -3,7 +3,21 @@
 
 import pytest
 import tmux_lib
+from unittest.mock import MagicMock, call
 
+class TestRandomBufferName:
+    """Tests for _generate_random_buffer_name function."""
+
+    def test_with_prefix(self):
+        """result should contain prefix and random characters"""
+        generated_name = tmux_lib._generate_random_buffer_name("something")
+        assert generated_name.startswith("something")
+        assert len(generated_name) > len("something")
+
+    def test_without_prefix(self):
+        """result should contain a non empty string"""
+        generated_name = tmux_lib._generate_random_buffer_name()
+        assert len(generated_name) > 0
 
 class TestDetectInteractiveMode:
     """Tests for the _detect_interactive_mode function."""
@@ -209,6 +223,49 @@ ends with colon:"""
 : something here"""
         # Line has ":" but doesn't end with ":"
         assert tmux_lib._detect_interactive_mode(output) is None
+
+
+class TestSendToTerminal:
+    """Tests for the send_to_terminal function."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.mock_run = MagicMock()
+        self.mock_verify = MagicMock(return_value=True)
+        self.mock_gen_name = MagicMock(return_value="test-buffer-123")
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self.mock_run)
+        monkeypatch.setattr(tmux_lib, "_verify_terminal_prompt", self.mock_verify)
+        monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", self.mock_gen_name)
+
+    def test_send_to_terminal_calls_tmux(self):
+        """Verify that send_to_terminal calls the correct tmux commands in order."""
+        session = "test-session"
+        cmd = "ls -l"
+        buffer_name = "test-buffer-123"  # match the mock return value
+
+        result = tmux_lib.send_to_terminal(session, cmd)
+
+        assert result is True
+
+        expected_calls = [
+            call(
+                ["tmux", "set-buffer", "-b", buffer_name, cmd],
+                capture_output=True,
+                text=True,
+            ),
+            call(
+                ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session],
+                capture_output=True,
+                text=True,
+            ),
+            call(
+                ["tmux", "delete-buffer", "-b", buffer_name],
+                capture_output=True,
+                text=True,
+            ),
+        ]
+        self.mock_run.assert_has_calls(expected_calls)
 
 
 if __name__ == "__main__":

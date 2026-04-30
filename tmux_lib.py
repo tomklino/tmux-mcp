@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 import time
+import random
+import string
 from typing import NamedTuple
 
 from colors import VALID_COLORS
@@ -218,6 +220,18 @@ def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
     return verify_string in last_line
 
 
+def _generate_random_buffer_name(prefix: str = "") -> str:
+    """
+    Generate a random name to use as a temporary tmux buffer.
+    Args:
+        prefix: optional prefix for the buffer name
+    Returns:
+        The name of the generated buffer
+    """
+    random_characters = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{prefix}{"-" if len(prefix) > 0 else ""}{random_characters}"
+
+
 def send_to_terminal(
     session_name: str, command: str, prompt_verify_string: str | None = None
 ) -> bool:
@@ -236,13 +250,22 @@ def send_to_terminal(
         ):
             return False
 
-    # Sending command surrounded by bracket-paste control characters to
-    # prevent accidental execution
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, f"\x1b[200~{command}\x1b[201~"],
-        capture_output=True,
-        text=True,
-    )
+    buffer_name = _generate_random_buffer_name(prefix=session_name)
+    try:
+        subprocess.run(
+            ["tmux", "set-buffer", "-b", buffer_name, command],
+            capture_output=True, text=True
+        )
+        subprocess.run(
+            ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session_name],
+            capture_output=True, text=True
+        )
+    finally:
+        subprocess.run(
+            ["tmux", "delete-buffer", "-b", buffer_name],
+            capture_output=True, text=True
+        )
+
     return True
 
 
