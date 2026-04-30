@@ -92,6 +92,16 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
         ["tmux", "set-option", "-g", "mouse", "on"], capture_output=True, text=True
     )
 
+    # Set terminal title
+    subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "set-titles", "on"],
+        capture_output=True, text=True
+    )
+    subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "set-titles-string", "#S / #W"],
+        capture_output=True, text=True
+    )
+
     # Set status bar color if a valid color is provided
     if color and is_valid_color(color):
         _set_status_bar_color(session_name, color)
