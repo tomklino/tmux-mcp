@@ -1,17 +1,29 @@
-# Tmux MCP
+# Tmux Buddy
 
-Tmux MCP is a Model Context Protocol (MCP) server that provides tools for interacting with `tmux` terminal sessions. It allows an AI agent to read terminal output, execute commands, and monitor the state of a terminal session in a safe and controlled manner.
+Tmux Buddy is an MCP server that aims to increase visiblity and the safety of the commands executed by AI agents.
+It allows to share a tmux terminal between a human and an agent in such a way that the human has full visiblity
+and finer control over the commands.
 
 <img width="1080" height="540" alt="tmux-mcp-again" src="https://github.com/user-attachments/assets/c909f390-04e5-4569-9999-8578c40ef26c" />
 
 ## Features
 
-* **Execute Commands**: Run commands in a tmux session and wait for completion.
-* **Capture Output**: Read the last N lines of terminal output.
-* **Safety Verification**: Use `prompt_verify_string` to ensure commands are executed in the correct context (e.g., specific directory or Kubernetes context).
-* **Interactive Detection**: Automatically detects when a terminal enters an interactive state (e.g., `vim`, `nano`, `less`).
+### Safety Features
+
+* **send command**: Send a command to the terminal without executing it. Uses
+  [bracketed paste](https://en.wikipedia.org/wiki/Bracketed-paste) to make sure accidental execution can't occur.
+* **Safety Verification**: Use `prompt_verify_string` to ensure commands are executed in the correct context.
+  the prompt line must show the string the agent expects or the command won't be sent (e.g., specific directory or Kubernetes context)
+* **Capture Output**: Read the last N lines of terminal output. The agent is instructed to always check the terminal current output
+  before executing the first command.
+
+### Speed-up Features
+
+* **Execute Commands**: Run commands in a tmux session and wait for completion - detects completion and returns immediately
+* **Interactive Detection**: Automatically detects when a terminal enters an interactive state (e.g., `vim`, `nano`, `less`) so the
+  agent doesn't need to wait for a time-out
 * **Command Monitoring**: Wait for asynchronous commands to finish and retrieve their output.
-* **Send and Interrupt**: Send strings to the terminal without execution (for user review) or send interrupts (Ctrl+C).
+* **Send Interrupt/Exit keys**: Allows the agent to exit by itself from interactive programs or commands that hang for too long.
 
 ## Prerequisites
 
