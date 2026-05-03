@@ -5,6 +5,8 @@ import inspect
 import subprocess
 import sys
 
+import datetime
+import os
 import tmux_lib
 
 
@@ -31,7 +33,22 @@ def cmd_new(args):
         else:
             print(f"Tmux session ready: {args.session_name}")
         # Attach to the session
-        subprocess.run(["tmux", "attach-session", "-t", args.session_name])
+        if args.record:
+            recordings_dir = os.path.expanduser("~/.tmux-session-recordings")
+            os.makedirs(recordings_dir, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"{recordings_dir}/{args.session_name}_{timestamp}.cast"
+            subprocess.run(
+                [
+                    "asciinema",
+                    "rec",
+                    "--command",
+                    f"tmux attach-session -t {args.session_name}",
+                    filename,
+                ]
+            )
+        else:
+            subprocess.run(["tmux", "attach-session", "-t", args.session_name])
     else:
         print(f"Failed to create tmux session: {args.session_name}", file=sys.stderr)
         sys.exit(1)
@@ -88,6 +105,11 @@ def main():
     # new subcommand
     new_parser = subparsers.add_parser("new", help="Create a new tmux session")
     new_parser.add_argument("session_name", help="Name for the tmux session")
+    new_parser.add_argument(
+        "--record",
+        action="store_true",
+        help="Record the tmux session using asciinema",
+    )
     new_parser.set_defaults(func=cmd_new)
 
     # test subcommand
