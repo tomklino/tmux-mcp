@@ -3,6 +3,7 @@
 import argparse
 import inspect
 import subprocess
+import shutil
 import sys
 
 import datetime
@@ -27,6 +28,14 @@ def cmd_new(args):
     # Check if session name is a valid color
     color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
     
+    if args.record:
+        if shutil.which("asciinema") is None:
+            print(
+                    "Error: asciinema is not installed. Please install it to use the --record option. See https://docs.asciinema.org/getting-started for instructions.",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+
     if tmux_lib.create_tmux_session(args.session_name, color=color):
         if color:
             print(f"Tmux session ready with {color} status bar: {args.session_name}")
