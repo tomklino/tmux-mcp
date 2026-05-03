@@ -119,6 +119,13 @@ The project includes a CLI utility `tmux_cli.py` for managing sessions:
 ./tmux_cli.py new green
 ```
 
+#### Recording Sessions
+
+To record a new tmux session, include the `--record` flag.
+Recordings are saved to `~/.tmux-session-recordings` with a filename format of
+`<session_name>_YYYY-MM-DD_HH-MM-SS.cast`. [asciinema] must be installed on the
+system to use this feature.
+
 > [!TIP]
 > Choose a color for the name of the terminal to color code the terminal status line
 
@@ -156,4 +163,7 @@ it runs.
 | `execute_command` | Execute a command and wait for completion/prompt. |
 | `wait_for_completion` | Wait for a previously sent command to finish. |
 | `get_last_command_output` | Extract the last command and its output from the terminal. |
+
+
+[asciinema]: https://docs.asciinema.org/getting-started
 
