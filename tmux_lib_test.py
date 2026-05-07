@@ -3,7 +3,26 @@
 
 import pytest
 import tmux_lib
+import permissions
 from unittest.mock import MagicMock, call
+
+
+def test_create_tmux_session_registers_permissions(monkeypatch, tmp_path):
+    # Use temp permissions file
+    monkeypatch.setenv("TMUX_MCP_PERMISSIONS_FILE", str(tmp_path / "permissions.json"))
+
+    # Avoid calling real tmux
+    monkeypatch.setattr(tmux_lib.subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stderr=""))
+
+    called = {"session": None}
+
+    def _ensure(name: str) -> None:
+        called["session"] = name
+
+    monkeypatch.setattr(permissions, "ensure_session_registered", _ensure)
+
+    assert tmux_lib.create_tmux_session("green") is True
+    assert called["session"] == "green"
 
 class TestRandomBufferName:
     """Tests for _generate_random_buffer_name function."""

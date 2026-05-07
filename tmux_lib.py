@@ -10,6 +10,8 @@ from typing import NamedTuple
 
 from colors import VALID_COLORS
 
+import permissions
+
 # This special prompt arrow is used to reliably find command prompts.
 PROMPT_ARROW = "__>"
 
@@ -115,6 +117,9 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
         capture_output=True,
         text=True,
     )
+
+    # Ensure the session is registered in the permissions file (safe default).
+    permissions.ensure_session_registered(session_name)
 
     return True
 
