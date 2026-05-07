@@ -67,7 +67,7 @@ def test_status_unlisted_session_shows_deny(tmp_path: Path):
     result = _run(script, "--session", "green", env=env)
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "#[fg=colour46]MCP:DENY#[default]"
+    assert result.stdout.strip() == "#[bg=colour46,fg=colour0]MCP:DENY#[default]"
 
 
 def test_toggle_cycles_deny_to_read(tmp_path: Path):

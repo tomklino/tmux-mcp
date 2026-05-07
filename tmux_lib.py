@@ -12,6 +12,8 @@ from colors import VALID_COLORS
 
 import permissions
 
+from pathlib import Path
+
 # This special prompt arrow is used to reliably find command prompts.
 PROMPT_ARROW = "__>"
 
@@ -62,6 +64,12 @@ class PromptVerificationError(Exception):
 
 # PS1 prompt to be set in the tmux session.
 TMUX_PS1 = r"$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
+
+
+def _repo_script_path(script_name: str) -> str:
+    """Return an absolute path to a script shipped with this repo."""
+
+    return str((Path(__file__).resolve().parent / "scripts" / script_name))
 
 
 def create_tmux_session(session_name: str, color: str | None = None) -> bool:
@@ -120,6 +128,57 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
 
     # Ensure the session is registered in the permissions file (safe default).
     permissions.ensure_session_registered(session_name)
+
+    # Apply tmux-mcp UX settings for sessions created via this tool.
+    status_script = _repo_script_path("tmux_mcp_status.py")
+    toggle_script = _repo_script_path("tmux_mcp_toggle.py")
+
+    # Mark session as managed by tmux-mcp
+    subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "@tmux_mcp_managed", "1"],
+        capture_output=True,
+        text=True,
+    )
+
+    subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "status", "on"],
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["tmux", "set-option", "-t", session_name, "status-interval", "5"],
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "tmux",
+            "set-option",
+            "-t",
+            session_name,
+            "status-right",
+            f"#( {status_script} --session '#S' )",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    # Prefix+P: toggle and refresh status line immediately.
+    # Note: key bindings can't be scoped per-session; they are global.
+    # We gate via @tmux_mcp_managed.
+    subprocess.run(
+        [
+            "tmux",
+            "bind-key",
+            "P",
+            "run-shell",
+            f"[ "
+            f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
+            f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S",
+        ],
+        capture_output=True,
+        text=True,
+    )
 
     return True
 

@@ -12,7 +12,11 @@ def test_create_tmux_session_registers_permissions(monkeypatch, tmp_path):
     monkeypatch.setenv("TMUX_MCP_PERMISSIONS_FILE", str(tmp_path / "permissions.json"))
 
     # Avoid calling real tmux
-    monkeypatch.setattr(tmux_lib.subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stderr=""))
+    monkeypatch.setattr(
+        tmux_lib.subprocess,
+        "run",
+        lambda *a, **k: MagicMock(returncode=0, stderr=""),
+    )
 
     called = {"session": None}
 
@@ -23,6 +27,39 @@ def test_create_tmux_session_registers_permissions(monkeypatch, tmp_path):
 
     assert tmux_lib.create_tmux_session("green") is True
     assert called["session"] == "green"
+
+
+def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatch):
+    """Sessions created via tmux-cli new should get plugin UX without ~/.tmux.conf changes."""
+
+    calls: list[list[str]] = []
+
+    def _run(cmd, capture_output=True, text=True, check=False):
+        # cmd is a list like ["tmux", "set-option", ...]
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+    monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+    assert tmux_lib.create_tmux_session("green") is True
+
+    # We don't assert exact full command order; just that required config was applied.
+    joined = [" ".join(c) for c in calls]
+
+    assert any(j.startswith("tmux set-option -t green @tmux_mcp_managed 1") for j in joined), joined
+    assert any(j.startswith("tmux set-option -t green status on") for j in joined), joined
+    assert any(j.startswith("tmux set-option -t green status-interval 5") for j in joined), joined
+    assert any(
+        "tmux set-option -t green status-right" in j and "tmux_mcp_status.py" in j
+        for j in joined
+    ), joined
+
+    # Binding is global (no -t <session>), but gated on @tmux_mcp_managed.
+    assert any(
+        j.startswith("tmux bind-key P run-shell") and "@tmux_mcp_managed" in j and "tmux_mcp_toggle.py" in j
+        for j in joined
+    ), joined
 
 class TestRandomBufferName:
     """Tests for _generate_random_buffer_name function."""
