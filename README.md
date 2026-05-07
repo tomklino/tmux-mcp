@@ -110,6 +110,20 @@ Then, add the following to your `~/.pi/agent/mcp.json` or project-specific `.pi/
 
 ## Usage
 
+### Permissions + in-tmux toggle (recommended)
+
+Create sessions with:
+
+```bash
+./tmux_cli.py new <name>
+```
+
+In the tmux session:
+- The status bar shows the current permission mode: `MCP:DENY`, `MCP:READ`, `MCP:SEND`, `MCP:EXEC`.
+- Use **`prefix + P` (prefix default: CTRL + b)** to cycle modes: `DENY → READ → SEND → EXEC → DENY`.
+
+Environment override (optional): set `TMUX_MCP_PERMISSIONS_FILE` to use a custom permissions file location.
+
 ### CLI Utility
 
 The project includes a CLI utility `tmux_cli.py` for managing sessions:
