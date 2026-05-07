@@ -33,20 +33,25 @@ def _load(path: Path) -> dict:
 
 
 def _segment(mode: str) -> str:
-    # Colors per design:
-    # deny=green, read=yellow, read_send=orange, execute=red
+    # Use a colored *background* for visibility regardless of the user's status bar
+    # background, then reset with #[default].
     mapping = {
-        "deny": ("colour46", "MCP:DENY"),
-        "read": ("colour226", "MCP:READ"),
-        "read_send": ("colour208", "MCP:SEND"),
-        "execute": ("colour196", "MCP:EXEC"),
+        # (bg, fg, label)
+        "deny": ("colour46", "colour0", "MCP:DENY"),  # green bg, black text
+        "read": ("colour226", "colour0", "MCP:READ"),  # yellow bg, black text
+        "read_send": ("colour208", "colour0", "MCP:SEND"),  # orange bg, black text
+        "execute": ("colour196", "colour15", "MCP:EXEC"),  # red bg, white text
     }
 
-    color, label = mapping.get("deny")
+    bg, fg, label = mapping["deny"]
     if mode in mapping:
-        color, label = mapping[mode]
+        bg, fg, label = mapping[mode]
 
-    return f"#[fg={color}]{label}#[default]"
+    style = f"#[bg={bg},fg={fg}]"
+    if mode == "execute":
+        style = f"#[bg={bg},fg={fg},bold]"
+
+    return f"{style}{label}#[default]"
 
 
 def main() -> int:
