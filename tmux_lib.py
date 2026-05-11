@@ -12,6 +12,7 @@ from colors import VALID_COLORS
 
 # This special prompt arrow is used to reliably find command prompts.
 PROMPT_ARROW = "__>"
+PROMPT_PREFIX = "·"
 
 # Seconds to wait before confirming interactive mode to avoid false positives
 INTERACTIVE_DETECTION_DELAY = 1.0
@@ -59,7 +60,7 @@ class PromptVerificationError(Exception):
 
 
 # PS1 prompt to be set in the tmux session.
-TMUX_PS1 = r"$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
+TMUX_PS1 = r"·$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
 
 
 def create_tmux_session(session_name: str, color: str | None = None) -> bool:
@@ -380,58 +381,100 @@ def execute_in_terminal(
     return wait_for_command_completion(session_name, timeout, poll_interval)
 
 
-def get_last_command(session_name: str) -> CommandOutput | None:
-    """
-    Extract the last command and its output from terminal output.
-    Args:
-        session_name: Name of the tmux session
-    Returns:
-        CommandOutput with prompt, command, and output, or None if not found
-    """
-    terminal_output = _capture_pane(session_name)
-    lines = terminal_output.strip().split("\n")
+def get_last_command(session_name: str, count: int | None = None):
+    """Get the most recent command(s) and their output from tmux scrollback.
 
-    # Find all prompt line indices (lines containing the prompt arrow)
-    prompt_indices = []
+    Use this when the user asks to inspect the output of the last command.
+
+    Args:
+        session_name: Name of the tmux session.
+        count: Number of commands to return (most recent first).
+
+    Returns:
+        If count is omitted: a single CommandOutput (or None).
+        If count is provided: a list[CommandOutput].
+    """
+
+    terminal_output = _capture_pane(session_name)
+    lines = terminal_output.splitlines()
+
+    # Gather prompt indices and parse prompt+command from each prompt line.
+    prompts: list[tuple[int, str, str]] = []
     for i, line in enumerate(lines):
+        if not line.startswith(PROMPT_PREFIX):
+            continue
         if PROMPT_ARROW not in line:
             continue
-        # Split on the arrow and take everything after it
+
         parts = line.split(PROMPT_ARROW, 1)
         after_arrow = parts[1] if len(parts) > 1 else ""
-        # Extract prompt (directory/git info) and command
         tokens = after_arrow.strip().split()
+
         if not tokens:
-            prompt_indices.append((i, "", ""))
+            prompt = ""
+            command = ""
+        else:
+            cmd_start = 1
+            if len(tokens) > 1 and tokens[1].startswith("git:("):
+                cmd_start = 2
+            prompt = PROMPT_ARROW + " " + " ".join(tokens[:cmd_start])
+            command = " ".join(tokens[cmd_start:])
+
+        prompts.append((i, prompt, command))
+
+    if not prompts:
+        return None if count is None else []
+
+    def _block_output(prompt_list_index: int) -> str:
+        line_idx = prompts[prompt_list_index][0]
+        next_line_idx = (
+            prompts[prompt_list_index + 1][0]
+            if prompt_list_index + 1 < len(prompts)
+            else len(lines)
+        )
+        return "\n".join(lines[line_idx + 1 : next_line_idx]).rstrip("\n")
+
+    if count is None:
+        last_line_idx, last_prompt, last_command = prompts[-1]
+
+        if last_command:
+            chosen_line_idx, chosen_prompt, chosen_command = (
+                last_line_idx,
+                last_prompt,
+                last_command,
+            )
+            status = "running"
+        elif len(prompts) < 2:
+            return None
+        else:
+            chosen_line_idx, chosen_prompt, chosen_command = prompts[-2]
+            status = "free"
+
+        # Legacy output includes prompt line and runs to the end.
+        output = "\n".join(lines[chosen_line_idx:])
+        return CommandOutput(
+            prompt=chosen_prompt, command=chosen_command, output=output, status=status
+        )
+
+    if count <= 0:
+        return []
+
+    results: list[CommandOutput] = []
+    for idx_in_prompts, (_line_idx, prompt, command) in enumerate(prompts):
+        if not command.strip():
             continue
-        # Find where command starts (after dir and optional git:(branch))
-        cmd_start = 1
-        if len(tokens) > 1 and tokens[1].startswith("git:("):
-            cmd_start = 2
-        prompt = PROMPT_ARROW + " " + " ".join(tokens[:cmd_start])
-        command = " ".join(tokens[cmd_start:])
-        prompt_indices.append((i, prompt, command))
 
-    if not prompt_indices:
-        return None
+        output = _block_output(idx_in_prompts)
+        if not output.strip():
+            continue
 
-    # If the last prompt has no command, the terminal is idle - use second-to-last
-    # If the last prompt has a command, it's still running - use the last one
-    last_idx, last_prompt, last_command = prompt_indices[-1]
-    if last_command:
-        idx, prompt, command = last_idx, last_prompt, last_command
-        status = "running"
-    elif len(prompt_indices) < 2:
-        return None
-    else:
-        idx, prompt, command = prompt_indices[-2]
-        status = "free"
+        results.append(
+            CommandOutput(prompt=prompt, command=command, output=output, status="free")
+        )
 
-    # Output is everything from this prompt line to the end
-    output_lines = lines[idx:]
-    output = "\n".join(output_lines)
-
-    return CommandOutput(prompt=prompt, command=command, output=output, status=status)
+    window = results[-count:]
+    window.reverse()
+    return window
 
 
 def main():
