@@ -163,14 +163,17 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
         text=True,
     )
 
-    # Prefix+P: toggle and refresh status line immediately.
+    # Global no-prefix key: cycle permissions and refresh status line immediately.
     # Note: key bindings can't be scoped per-session; they are global.
     # We gate via @tmux_mcp_managed.
+    #
+    # Key choice: Ctrl+] (rarely used by tmux defaults).
     subprocess.run(
         [
             "tmux",
             "bind-key",
-            "P",
+            "-n",
+            "C-]",
             "run-shell",
             f"[ "
             f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "

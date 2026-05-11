@@ -57,7 +57,9 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
 
     # Binding is global (no -t <session>), but gated on @tmux_mcp_managed.
     assert any(
-        j.startswith("tmux bind-key P run-shell") and "@tmux_mcp_managed" in j and "tmux_mcp_toggle.py" in j
+        j.startswith("tmux bind-key -n C-] run-shell")
+        and "@tmux_mcp_managed" in j
+        and "tmux_mcp_toggle.py" in j
         for j in joined
     ), joined
 
