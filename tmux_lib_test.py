@@ -225,6 +225,69 @@ ends with colon:"""
         assert tmux_lib._detect_interactive_mode(output) is None
 
 
+class TestGetLastCommand:
+    """Tests for the get_last_command function."""
+
+    def test_multiple_commands_filters_empty_output_and_returns_requested_count(self, monkeypatch):
+        """Split scrollback into (prompt, command, output) blocks and filter empty outputs."""
+
+        scrollback = "\n".join(
+            [
+                "some older noise",
+                "·tmux-mcp __> ~/proj echo first",
+                "first-out",
+                "·tmux-mcp __> ~/proj true",
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out-line-1",
+                "second-out-line-2",
+                "·tmux-mcp __> ~/proj",  # idle prompt
+                "",
+            ]
+        )
+
+        monkeypatch.setattr(tmux_lib, "_capture_pane", lambda session_name: scrollback)
+
+        # New behavior: count parameter, returns list[CommandOutput]
+        results = tmux_lib.get_last_command("blue", count=2)
+
+        # Oldest-first within the returned window: most recent first
+        assert [r.command for r in results] == ["echo second", "echo first"]
+        assert results[0].output == "second-out-line-1\nsecond-out-line-2"
+        assert results[1].output == "first-out"
+        assert all(r.status == "free" for r in results)
+
+    def test_idle_terminal_returns_second_to_last_prompt_block(self, monkeypatch):
+        """When the last prompt has no command, get_last_command uses the previous prompt."""
+
+        scrollback = "\n".join(
+            [
+                "some older noise",
+                "·tmux-mcp __> ~/proj echo first",
+                "first-out",
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out",
+                "·tmux-mcp __> ~/proj",  # idle prompt (no command)
+                "",
+            ]
+        )
+
+        monkeypatch.setattr(tmux_lib, "_capture_pane", lambda session_name: scrollback)
+
+        result = tmux_lib.get_last_command("blue")
+
+        assert result is not None
+        assert result.status == "free"
+        assert result.command == "echo second"
+        # Current implementation includes the prompt line in output and captures to end
+        assert result.output == "\n".join(
+            [
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out",
+                "·tmux-mcp __> ~/proj",
+            ]
+        )
+
+
 class TestSendToTerminal:
     """Tests for the send_to_terminal function."""
 

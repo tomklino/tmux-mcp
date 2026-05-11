@@ -15,8 +15,10 @@ mcp = FastMCP("tmux")
 def get_last_lines(session_name: str, lines: int = 10) -> str:
     """
     Get the last N lines from a tmux terminal session.
-    Use this to check the current state of the terminal, see command output,
-    or verify what's currently displayed on screen.
+    Use this to check the current state of the terminal or what's currently displayed
+    on screen (e.g., prompts, interactive apps).
+
+    If you need to inspect the output of the last command, prefer get_last_command_output.
     Args:
         session_name: Name of the tmux session to read from
         lines: Number of lines to return (default: 10)
@@ -35,6 +37,9 @@ def send_command(
     Use this for risky commands or when the user asks to only send the
     command. This allows the user to review the command and execute it
     by themselves.
+
+    When sending commands, only the user can execute them—send commands one by one
+    and wait for user confirmation before sending the next.
     Args:
         session_name: Name of the tmux session
         command: Command text to send (will NOT have newline appended)
@@ -139,8 +144,9 @@ def wait_for_completion(session_name: str, timeout: float = 30.0) -> dict:
 def get_last_command_output(session_name: str) -> dict:
     """
     Extract the last command and its output from the terminal.
-    Use this to get structured information about what command was run
-    and what output it produced.
+
+    Use this when the user asks to inspect the output of the last command.
+    Prefer this over get_last_lines for command output inspection.
     Args:
         session_name: Name of the tmux session
     Returns:
