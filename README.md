@@ -120,6 +120,12 @@ Create sessions with:
 ./tmux_cli.py new <name>
 ```
 
+The session will start by default on "deny", by won't let the agent any permissions.
+cycle through the modes to allow the agent to work with the terminal.
+
+You may change the default permission level new terminals start at in the permission
+config file (default: $HOME/.config/tmux-mcp/permissions.json)
+
 In the tmux session, the status bar shows the current mode:
 
 - `MCP:DENY` — agent access is blocked for this session.
