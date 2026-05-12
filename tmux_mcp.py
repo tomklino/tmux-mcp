@@ -8,6 +8,8 @@ from mcp.server.fastmcp import FastMCP
 
 import tmux_lib
 
+import permissions
+
 mcp = FastMCP("tmux")
 
 
@@ -25,6 +27,7 @@ def get_last_lines(session_name: str, lines: int = 10) -> str:
     Returns:
         The last N non-empty lines from the terminal
     """
+    permissions.assert_allowed(session_name, "get_last_lines")
     return tmux_lib.get_n_last_lines(session_name, lines)
 
 
@@ -48,6 +51,7 @@ def send_command(
     Returns:
         "sent" if command was sent, "prompt_mismatch" if verification failed
     """
+    permissions.assert_allowed(session_name, "send_command")
     success = tmux_lib.send_to_terminal(session_name, command, prompt_verify_string)
     return "sent" if success else "prompt_mismatch"
 
@@ -62,6 +66,7 @@ def send_interrupt(session_name: str) -> str:
     Returns:
         "sent" when the interrupt was sent
     """
+    permissions.assert_allowed(session_name, "send_interrupt")
     tmux_lib.send_interrupt(session_name)
     return "sent"
 
@@ -91,6 +96,7 @@ def execute_command(
         was detected, "timeout" if the command didn't complete within the timeout
         period, or "prompt_mismatch" if prompt verification failed.
     """
+    permissions.assert_allowed(session_name, "execute_command")
     try:
         result = tmux_lib.execute_in_terminal(
             session_name,
@@ -129,6 +135,7 @@ def wait_for_completion(session_name: str, timeout: float = 30.0) -> dict:
         (e.g., less, vim, nano) was detected, or "timeout" if the command didn't
         complete within the timeout period.
     """
+    permissions.assert_allowed(session_name, "wait_for_completion")
     result = tmux_lib.wait_for_command_completion(session_name, timeout)
     if result is None:
         return {"prompt": "", "command": "", "output": "", "status": "timeout"}
@@ -153,6 +160,7 @@ def get_last_command_output(session_name: str) -> dict:
         Dictionary with 'prompt', 'command', and 'output' keys,
         or {'error': 'no_command_found'} if no command was detected
     """
+    permissions.assert_allowed(session_name, "get_last_command_output")
     result = tmux_lib.get_last_command(session_name)
     if result is None:
         return {"error": "no_command_found"}
