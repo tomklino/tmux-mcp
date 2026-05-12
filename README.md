@@ -110,6 +110,36 @@ Then, add the following to your `~/.pi/agent/mcp.json` or project-specific `.pi/
 
 ## Usage
 
+### Permissions + in-tmux toggle (recommended)
+
+When you share a tmux session with an AI agent, **permission modes** let you control *what the agent is allowed to do* in that session.
+
+Create sessions with:
+
+```bash
+./tmux_cli.py new <name>
+```
+
+The session will start by default on "deny", by won't let the agent any permissions.
+cycle through the modes to allow the agent to work with the terminal.
+
+You may change the default permission level new terminals start at in the permission
+config file (default: $HOME/.config/tmux-mcp/permissions.json)
+
+In the tmux session, the status bar shows the current mode:
+
+- `MCP:DENY` — agent access is blocked for this session.
+- `MCP:READ` — agent can *observe only* (e.g. read terminal output). No typing.
+- `MCP:SEND` — agent can *type commands* into the prompt, but won’t execute them.
+  Use this when you want to review/edit a command before running it yourself.
+- `MCP:EXEC` — agent can type *and* execute commands.
+
+To change modes from inside tmux, use **`CTRL + ]`** to cycle:
+
+`DENY → READ → SEND → EXEC → DENY`
+
+Environment override (optional): set `TMUX_MCP_PERMISSIONS_FILE` to use a custom permissions file location.
+
 ### CLI Utility
 
 The project includes a CLI utility `tmux_cli.py` for managing sessions:
