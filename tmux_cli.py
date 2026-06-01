@@ -36,7 +36,11 @@ def cmd_new(args):
                 )
             sys.exit(1)
 
-    if tmux_lib.create_tmux_session(args.session_name, color=color):
+    if tmux_lib.create_tmux_session(
+        args.session_name,
+        color=color,
+        scroll_popup=args.experimental_scroll_popup,
+    ):
         if color:
             print(f"Tmux session ready with {color} status bar: {args.session_name}")
         else:
@@ -118,6 +122,16 @@ def main():
         "--record",
         action="store_true",
         help="Record the tmux session using asciinema",
+    )
+    new_parser.add_argument(
+        "--experimental-scroll-popup",
+        action="store_true",
+        help=(
+            "Experimental: mouse-wheel-up on any pane opens a popup "
+            "viewer of the pane's piped output (via less) instead of "
+            "entering copy-mode. Installs server-global hooks and a "
+            "WheelUpPane key bind."
+        ),
     )
     new_parser.set_defaults(func=cmd_new)
 

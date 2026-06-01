@@ -6,6 +6,7 @@ import sys
 import time
 import random
 import string
+import logging
 from typing import NamedTuple
 
 from colors import VALID_COLORS
@@ -20,6 +21,28 @@ PROMPT_PREFIX = "·"
 
 # Seconds to wait before confirming interactive mode to avoid false positives
 INTERACTIVE_DETECTION_DELAY = 1.0
+
+
+def _get_logger() -> logging.Logger:
+    logger = logging.getLogger("tmux_mcp")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.DEBUG)
+
+    log_path = Path("~/.tmux-mcp-debug.log").expanduser()
+    handler = logging.FileHandler(log_path)
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+log = _get_logger()
 
 
 def is_valid_color(name: str) -> bool:
@@ -73,13 +96,112 @@ def _repo_script_path(script_name: str) -> str:
     return str((Path(__file__).resolve().parent / "scripts" / script_name))
 
 
-def create_tmux_session(session_name: str, color: str | None = None) -> bool:
+# Perl source for the experimental scroll-popup log filter. Mirrors the
+# body of tmux-scroll-viewer's bin/log-view.sh: strips OSC/DCS/CSI/etc.
+# control sequences and CR-rewritten line fragments so the popup viewer
+# (less -R) only sees SGR colour codes and printable text.
+# Stored on tmux's global env and eval'd by perl via $ENV{TMUX_MCP_FILTER}
+# at popup time, so the regex source survives intact without surviving
+# multiple nested shell- and tmux-quote layers.
+_SCROLL_POPUP_FILTER = r"""
+s/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)//g;
+s/\x1b[PXk^_][^\x1b]*\x1b\\//g;
+s/\x1b\[[\d;?]*[A-LN-Za-ln-z]//g;
+s/\x1b[^\[\]PXk^_]//g;
+s/\r+\n/\n/g;
+s/[^\n]*\r//g;
+s/\A\n+//;
+"""
+
+
+def _setup_scroll_popup(session_name: str) -> None:
+    """Apply the tmux-scroll-viewer wheel-up popup behaviour.
+
+    Every pane mirrors raw output to /tmp/tmux-pane-<session>-<pane>.log;
+    mouse-wheel-up opens a display-popup viewer of that log via less -R
+    instead of entering copy-mode, keeping the worker pane out of any
+    window mode so `tmux send-keys` always reaches the shell. Hooks and
+    the key bind are server-global (tmux scope, not per-session).
+    """
+    # Perl filter pattern lives on tmux's global env; the popup bind
+    # below reads it via $ENV{TMUX_MCP_FILTER}, avoiding the need to
+    # shell-quote the regex through tmux + run-shell + display-popup.
+    subprocess.run(
+        ["tmux", "set-environment", "-g",
+         "TMUX_MCP_FILTER", _SCROLL_POPUP_FILTER],
+        capture_output=True, text=True,
+    )
+
+    pipe_cmd = (
+        'pipe-pane -o '
+        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
+    )
+    for hook in ("session-created", "after-new-window", "after-split-window"):
+        subprocess.run(
+            ["tmux", "set-hook", "-g", hook, pipe_cmd],
+            capture_output=True, text=True,
+        )
+
+    cleanup_cmd = (
+        'run-shell '
+        '"rm -f /tmp/tmux-pane-#{hook_session_name}-#{hook_pane}.log"'
+    )
+    for hook in ("pane-exited", "pane-died"):
+        subprocess.run(
+            ["tmux", "set-hook", "-g", hook, cleanup_cmd],
+            capture_output=True, text=True,
+        )
+
+    # session-created already fired for this session before the hook was
+    # installed; start the pipe for the initial pane explicitly.
+    subprocess.run(
+        ["tmux", "pipe-pane", "-o", "-t", session_name,
+         "cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"],
+        capture_output=True, text=True,
+    )
+
+    subprocess.run(
+        ["tmux", "unbind-key", "-T", "root", "WheelUpPane"],
+        capture_output=True, text=True,
+    )
+
+    # popup_cmd contains no single-quote chars, so it can be wrapped in
+    # tmux's '...' for run-shell (literal, no escape processing). The
+    # \" and \\\$ are for the outer sh that run-shell spawns: the \"s
+    # mark the inner perl-arg "..." block, and \\\$ keeps the env-var
+    # marker from being expanded at outer-sh time so the popup sh sees
+    # it intact.
+    popup_cmd = (
+        'tmux display-popup -E -w 90% -h 90% '
+        '"perl -0777 -pe \\"eval \\\\\\$ENV{TMUX_MCP_FILTER}\\" '
+        '< /tmp/tmux-pane-#{session_name}-#{pane_id}.log '
+        '| less --mouse -R -f -X -e +G" || true'
+    )
+    false_cmd = f"run-shell -b '{popup_cmd}'"
+
+    subprocess.run(
+        ["tmux", "bind-key", "-T", "root", "WheelUpPane",
+         "if-shell", "-F",
+         "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}",
+         "send-keys -M",
+         false_cmd],
+        capture_output=True, text=True,
+    )
+
+
+def create_tmux_session(
+    session_name: str,
+    color: str | None = None,
+    scroll_popup: bool = False,
+) -> bool:
     """
     Create a new detached tmux session with predefined settings and PS1.
     Attaches to existing session if one already exists.
     Args:
         session_name: Name for the tmux session
         color: Optional color name to set the status bar background
+        scroll_popup: If True, install the experimental scroll-popup
+            hooks and WheelUpPane bind (server-global).
     Returns:
         True if session was created/attached successfully, False otherwise
     """
@@ -183,6 +305,9 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
         capture_output=True,
         text=True,
     )
+
+    if scroll_popup:
+        _setup_scroll_popup(session_name)
 
     return True
 
@@ -429,6 +554,7 @@ def execute_in_terminal(
         If sync=True: CommandOutput with output and status, or None if timeout
         If sync=False: Empty string on success, None if verification failed
     """
+    log.debug(f"{command=}")
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
             session_name=session_name, verify_string=prompt_verify_string
@@ -515,6 +641,7 @@ def get_last_command(session_name: str, count: int | None = None):
             return None
         else:
             chosen_line_idx, chosen_prompt, chosen_command = prompts[-2]
+            log.debug(f"setting stats to free(1): {prompts=}; {chosen_prompt=}, {chosen_command=}, output={lines[chosen_line_idx:]}")
             status = "free"
 
         # Legacy output includes prompt line and runs to the end.
