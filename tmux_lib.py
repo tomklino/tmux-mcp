@@ -10,6 +10,7 @@ from typing import NamedTuple
 
 from colors import VALID_COLORS
 
+import config
 import permissions
 
 from pathlib import Path
@@ -19,6 +20,72 @@ PROMPT_ARROW = "__>"
 
 # Seconds to wait before confirming interactive mode to avoid false positives
 INTERACTIVE_DETECTION_DELAY = 1.0
+
+# Suffix appended to the default socket to derive the dedicated socket
+# for sessions that opt into the experimental scroll-popup behaviour.
+# The popup needs server-global key rebinds (WheelUpPane) that would
+# otherwise leak into non-experimental sessions on the same server.
+SCROLL_POPUP_SUFFIX = "-experimental-scroll"
+
+
+def default_socket() -> str:
+    """Default tmux socket name. Wraps config.default_socket()."""
+    return config.default_socket()
+
+
+def scroll_popup_socket() -> str:
+    """Socket hosting sessions with the experimental scroll-popup feature."""
+    return default_socket() + SCROLL_POPUP_SUFFIX
+
+
+def managed_sockets() -> list[str]:
+    """Every tmux socket this build of tmux-buddy knows how to manage.
+
+    Default first, then the experimental-scroll socket. Iterated by
+    resolve_socket so newly-added sockets are automatically monitored
+    even when no sessions live on them yet.
+    """
+    return [default_socket(), scroll_popup_socket()]
+
+
+class SessionNameConflictError(Exception):
+    """A session of the same name lives on a different managed socket."""
+
+    def __init__(self, session_name: str, existing_socket: str, target_socket: str):
+        self.session_name = session_name
+        self.existing_socket = existing_socket
+        self.target_socket = target_socket
+        super().__init__(
+            f"Session '{session_name}' already exists on socket "
+            f"'{existing_socket}'; cannot create it on '{target_socket}'."
+        )
+
+
+class SessionNotFoundError(Exception):
+    """The named session is not on any managed socket."""
+
+    def __init__(self, session_name: str):
+        self.session_name = session_name
+        super().__init__(
+            f"Session '{session_name}' was not found on any managed socket: "
+            f"{managed_sockets()}"
+        )
+
+
+def resolve_socket(session_name: str) -> str:
+    """Return the managed socket hosting `session_name`.
+
+    Scans every socket in managed_sockets() on each call (no caching).
+    Raises SessionNotFoundError if the name is not on any of them.
+    """
+    for socket in managed_sockets():
+        result = subprocess.run(
+            ["tmux", "-L", socket, "list-sessions", "-F", "#S"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and session_name in result.stdout.split("\n"):
+            return socket
+    raise SessionNotFoundError(session_name)
 
 
 def is_valid_color(name: str) -> bool:
@@ -32,17 +99,11 @@ def is_valid_color(name: str) -> bool:
     return name.lower() in VALID_COLORS
 
 
-def _set_status_bar_color(session_name: str, color: str) -> bool:
-    """Set the tmux status bar background color.
-
-    Args:
-        session_name: Name of the tmux session
-        color: Color name to set
-    Returns:
-        True if successful, False otherwise
-    """
+def _set_status_bar_color(socket: str, session_name: str, color: str) -> bool:
+    """Set the tmux status bar background color on the given socket."""
     result = subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status-style", f"bg={color}"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-style", f"bg={color}"],
         capture_output=True,
         text=True,
     )
@@ -63,7 +124,7 @@ class PromptVerificationError(Exception):
 
 
 # PS1 prompt to be set in the tmux session.
-TMUX_PS1 = r"$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
+TMUX_PS1 = r"·$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
 
 
 def _repo_script_path(script_name: str) -> str:
@@ -72,19 +133,139 @@ def _repo_script_path(script_name: str) -> str:
     return str((Path(__file__).resolve().parent / "scripts" / script_name))
 
 
-def create_tmux_session(session_name: str, color: str | None = None) -> bool:
+# Perl filter stripping control sequences from the popup log so less -R
+# only sees SGR colour codes and printable text. Mirrors the body of
+# tmux-scroll-viewer's bin/log-view.sh.
+_SCROLL_POPUP_FILTER = r"""
+s/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)//g;
+s/\x1b[PXk^_][^\x1b]*\x1b\\//g;
+s/\x1b\[[\d;?]*[A-LN-Za-ln-z]//g;
+s/\x1b[^\[\]PXk^_]//g;
+s/\r+\n/\n/g;
+s/[^\n]*\r//g;
+s/\A\n+//;
+"""
+
+
+def _setup_scroll_popup(socket: str, session_name: str) -> None:
+    """Install the wheel-up scroll-popup hooks/keybind on `socket`.
+
+    Mouse-wheel-up opens a display-popup viewer of the piped pane log
+    (via less -R) instead of entering copy-mode. The WheelUpPane bind
+    is server-global, so this must run on the experimental-scroll
+    socket only.
+    """
+    # Marker for the popup bind to gate on.
+    subprocess.run(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "@tmux_mcp_scroll_popup", "1"],
+        capture_output=True, text=True,
+    )
+
+    # Stash the perl filter on tmux env so the popup bind can read it
+    # via $ENV{TMUX_MCP_FILTER} (avoids nested shell-quoting).
+    subprocess.run(
+        ["tmux", "-L", socket, "set-environment", "-t", session_name,
+         "TMUX_MCP_FILTER", _SCROLL_POPUP_FILTER],
+        capture_output=True, text=True,
+    )
+
+    # Mirror each new pane's raw output to /tmp/tmux-pane-<session>-<id>.log.
+    pipe_cmd = (
+        'pipe-pane -o '
+        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
+    )
+    for hook in ("after-new-window", "after-split-window"):
+        subprocess.run(
+            ["tmux", "-L", socket, "set-hook", "-t", session_name,
+             hook, pipe_cmd],
+            capture_output=True, text=True,
+        )
+
+    cleanup_cmd = (
+        'run-shell '
+        '"rm -f /tmp/tmux-pane-#{hook_session_name}-#{hook_pane}.log"'
+    )
+    for hook in ("pane-exited", "pane-died"):
+        subprocess.run(
+            ["tmux", "-L", socket, "set-hook", "-t", session_name,
+             hook, cleanup_cmd],
+            capture_output=True, text=True,
+        )
+
+    # Start the pipe for the initial pane (guarded so re-running setup is a no-op;
+    # `pipe-pane -o` toggles if a pipe is already open).
+    guarded_pipe = (
+        f'pipe-pane -t {session_name} '
+        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
+    )
+    subprocess.run(
+        ["tmux", "-L", socket, "if-shell", "-F", "-t", session_name,
+         "#{?pane_pipe,0,1}", guarded_pipe],
+        capture_output=True, text=True,
+    )
+
+    subprocess.run(
+        ["tmux", "-L", socket, "unbind-key", "-T", "root", "WheelUpPane"],
+        capture_output=True, text=True,
+    )
+
+    # Bind popup action to mouse-wheel up.
+    popup_cmd = (
+        'tmux display-popup -E -w 90% -h 90% '
+        '"perl -0777 -pe \\"eval \\\\\\$ENV{TMUX_MCP_FILTER}\\" '
+        '< /tmp/tmux-pane-#{session_name}-#{pane_id}.log '
+        '| less --mouse -R -f -X -e +G" || true'
+    )
+    popup_action = f"run-shell -b '{popup_cmd}'"
+    passthrough_cond = (
+        '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag},'
+        '#{!=:#{@tmux_mcp_scroll_popup},1}}'
+    )
+    subprocess.run(
+        ["tmux", "-L", socket, "bind-key", "-T", "root", "WheelUpPane",
+         "if-shell", "-F", passthrough_cond,
+         "send-keys -M",
+         popup_action],
+        capture_output=True, text=True,
+    )
+
+
+def create_tmux_session(
+    session_name: str,
+    color: str | None = None,
+    scroll_popup: bool = False,
+    return_socket: bool = False,
+) -> bool | str:
     """
     Create a new detached tmux session with predefined settings and PS1.
     Attaches to existing session if one already exists.
     Args:
         session_name: Name for the tmux session
         color: Optional color name to set the status bar background
+        scroll_popup: If True, create on the experimental-scroll socket
+            and install the wheel-up popup hooks.
+        return_socket: If True, return the socket name (str) instead of a bool.
     Returns:
-        True if session was created/attached successfully, False otherwise
+        True/socket-name on success, False on failure. Raises
+        SessionNameConflictError if the name lives on another managed socket.
     """
+    socket = scroll_popup_socket() if scroll_popup else default_socket()
+
+    # Reject cross-socket dups: tmux new-session -A only sees the target socket.
+    for other in managed_sockets():
+        if other == socket:
+            continue
+        result = subprocess.run(
+            ["tmux", "-L", other, "list-sessions", "-F", "#S"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and session_name in result.stdout.split("\n"):
+            raise SessionNameConflictError(session_name, other, socket)
+
     # Create a new detached session, or attach if it already exists
     create_result = subprocess.run(
-        ["tmux", "new-session", "-Ad", "-s", session_name],
+        ["tmux", "-L", socket, "new-session", "-Ad", "-s", session_name],
         capture_output=True,
         text=True,
     )
@@ -94,34 +275,39 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
 
     # Set scrollback buffer size
     subprocess.run(
-        ["tmux", "set-option", "-g", "history-limit", "250000"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "history-limit", "250000"],
         capture_output=True,
         text=True,
     )
 
     # Enable mouse mode
     subprocess.run(
-        ["tmux", "set-option", "-g", "mouse", "on"], capture_output=True, text=True
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "mouse", "on"],
+        capture_output=True, text=True,
     )
 
     # Set terminal title
     subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "set-titles", "on"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "set-titles", "on"],
         capture_output=True, text=True
     )
     subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "set-titles-string", "#S / #W"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "set-titles-string", "#S / #W"],
         capture_output=True, text=True
     )
 
     # Set status bar color if a valid color is provided
     if color and is_valid_color(color):
-        _set_status_bar_color(session_name, color)
+        _set_status_bar_color(socket, session_name, color)
 
     # Set the PS1 prompt
     ps1_export = f"export PS1='{TMUX_PS1}'\n"
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, ps1_export],
+        ["tmux", "-L", socket, "send-keys", "-t", session_name, ps1_export],
         capture_output=True,
         text=True,
     )
@@ -135,67 +321,52 @@ def create_tmux_session(session_name: str, color: str | None = None) -> bool:
 
     # Mark session as managed by tmux-mcp
     subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "@tmux_mcp_managed", "1"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "@tmux_mcp_managed", "1"],
         capture_output=True,
         text=True,
     )
 
     subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status", "on"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status", "on"],
         capture_output=True,
         text=True,
     )
     subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status-interval", "5"],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-interval", "5"],
         capture_output=True,
         text=True,
     )
     subprocess.run(
-        [
-            "tmux",
-            "set-option",
-            "-t",
-            session_name,
-            "status-right",
-            f"#( {status_script} --session '#S' )",
-        ],
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-right", f"#( {status_script} --session '#S' )"],
         capture_output=True,
         text=True,
     )
 
-    # Global no-prefix key: cycle permissions and refresh status line immediately.
-    # Note: key bindings can't be scoped per-session; they are global.
-    # We gate via @tmux_mcp_managed.
-    #
-    # Key choice: Ctrl+] (rarely used by tmux defaults).
+    # Ctrl+] (global, gated on @tmux_mcp_managed): cycle permissions + refresh status.
     subprocess.run(
-        [
-            "tmux",
-            "bind-key",
-            "-n",
-            "C-]",
-            "run-shell",
-            f"[ "
-            f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
-            f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S",
-        ],
+        ["tmux", "-L", socket, "bind-key", "-n", "C-]", "run-shell",
+         f"[ "
+         f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
+         f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S"],
         capture_output=True,
         text=True,
     )
 
-    return True
+    if scroll_popup:
+        _setup_scroll_popup(socket, session_name)
+
+    return socket if return_socket else True
 
 
-def _capture_pane(session_name: str) -> str:
-    """
-    Capture the current pane content.
-    Args:
-        session_name: Name of the tmux session
-    Returns:
-        The captured pane content as a string
-    """
+def _capture_pane(socket: str, session_name: str) -> str:
+    """Capture the current pane content on the given socket."""
     result = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-S", "-", "-t", session_name],
+        ["tmux", "-L", socket, "capture-pane", "-p", "-S", "-",
+         "-t", session_name],
         capture_output=True,
         text=True,
         check=True,
@@ -238,7 +409,8 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
     Returns:
         The last N lines as a string
     """
-    content = _capture_pane(session_name)
+    socket = resolve_socket(session_name)
+    content = _capture_pane(socket, session_name)
     content_lines = content.split("\n")
 
     # Strip control characters from each line
@@ -266,16 +438,11 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
     return "\n".join(trimmed[-lines:])
 
 
-def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
-    """
-    Verify if the terminal prompt contains a specific string.
-    Args:
-        session_name: Name of the tmux session
-        verify_string: String to check for in the prompt
-    Returns:
-        True if the string is found, False otherwise
-    """
-    content = _capture_pane(session_name)
+def _verify_terminal_prompt(
+    socket: str, session_name: str, verify_string: str
+) -> bool:
+    """Check whether the prompt on the named session contains a string."""
+    content = _capture_pane(socket, session_name)
     lines = content.rstrip("\n").split("\n")
     # Check the last non-empty line for prompt
     last_line = ""
@@ -311,25 +478,29 @@ def send_to_terminal(
     Returns:
         True if command was sent, False if prompt verification failed
     """
+    socket = resolve_socket(session_name)
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
-            session_name=session_name, verify_string=prompt_verify_string
+            socket=socket,
+            session_name=session_name,
+            verify_string=prompt_verify_string,
         ):
             return False
 
     buffer_name = _generate_random_buffer_name(prefix=session_name)
     try:
         subprocess.run(
-            ["tmux", "set-buffer", "-b", buffer_name, command],
+            ["tmux", "-L", socket, "set-buffer", "-b", buffer_name, command],
             capture_output=True, text=True
         )
         subprocess.run(
-            ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session_name],
+            ["tmux", "-L", socket, "paste-buffer", "-p", "-b", buffer_name,
+             "-t", session_name],
             capture_output=True, text=True
         )
     finally:
         subprocess.run(
-            ["tmux", "delete-buffer", "-b", buffer_name],
+            ["tmux", "-L", socket, "delete-buffer", "-b", buffer_name],
             capture_output=True, text=True
         )
 
@@ -337,13 +508,11 @@ def send_to_terminal(
 
 
 def send_interrupt(session_name: str) -> None:
-    """
-    Send CTRL+C interrupt to the terminal.
-    Args:
-        session_name: Name of the tmux session
-    """
+    """Send CTRL+C interrupt to the terminal."""
+    socket = resolve_socket(session_name)
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, "C-c"], capture_output=True, text=True
+        ["tmux", "-L", socket, "send-keys", "-t", session_name, "C-c"],
+        capture_output=True, text=True
     )
 
 
@@ -360,6 +529,19 @@ def wait_for_command_completion(
         CommandOutput with status "free" if completed, "interactive" if
         interactive program detected, or None if timeout
     """
+    socket = resolve_socket(session_name)
+    return _wait_for_command_completion_on(
+        socket, session_name, timeout, poll_interval
+    )
+
+
+def _wait_for_command_completion_on(
+    socket: str,
+    session_name: str,
+    timeout: float = 30,
+    poll_interval: float = 0.001,
+) -> CommandOutput | None:
+    """Caller supplies the socket; avoids re-resolving on every poll."""
     start_time = time.time()
     last_output = None
 
@@ -369,7 +551,7 @@ def wait_for_command_completion(
     while time.time() - start_time < timeout:
         time.sleep(poll_interval)
 
-        result = get_last_command(session_name)
+        result = _get_last_command_on(socket, session_name)
         if result is None:
             continue
 
@@ -428,34 +610,42 @@ def execute_in_terminal(
         If sync=True: CommandOutput with output and status, or None if timeout
         If sync=False: Empty string on success, None if verification failed
     """
+    socket = resolve_socket(session_name)
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
-            session_name=session_name, verify_string=prompt_verify_string
+            socket=socket,
+            session_name=session_name,
+            verify_string=prompt_verify_string,
         ):
             raise PromptVerificationError(
                 f"Prompt does not contain '{prompt_verify_string}'"
             )
 
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, command + "\n"],
+        ["tmux", "-L", socket, "send-keys", "-t", session_name,
+         command + "\n"],
         capture_output=True,
         text=True,
     )
     if not sync:
         return ""
 
-    return wait_for_command_completion(session_name, timeout, poll_interval)
+    return _wait_for_command_completion_on(
+        socket, session_name, timeout, poll_interval
+    )
 
 
 def get_last_command(session_name: str) -> CommandOutput | None:
-    """
-    Extract the last command and its output from terminal output.
-    Args:
-        session_name: Name of the tmux session
-    Returns:
-        CommandOutput with prompt, command, and output, or None if not found
-    """
-    terminal_output = _capture_pane(session_name)
+    """Extract the last command and its output from the named session."""
+    socket = resolve_socket(session_name)
+    return _get_last_command_on(socket, session_name)
+
+
+def _get_last_command_on(
+    socket: str, session_name: str
+) -> CommandOutput | None:
+    """Caller supplies the socket."""
+    terminal_output = _capture_pane(socket, session_name)
     lines = terminal_output.strip().split("\n")
 
     # Find all prompt line indices (lines containing the prompt arrow)

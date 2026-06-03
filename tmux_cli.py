@@ -27,7 +27,7 @@ def cmd_new(args):
     """Create a new tmux session and attach to it."""
     # Check if session name is a valid color
     color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
-    
+
     if args.record:
         if shutil.which("asciinema") is None:
             print(
@@ -36,7 +36,18 @@ def cmd_new(args):
                 )
             sys.exit(1)
 
-    if tmux_lib.create_tmux_session(args.session_name, color=color):
+    try:
+        socket = tmux_lib.create_tmux_session(
+            args.session_name,
+            color=color,
+            scroll_popup=args.experimental_scroll_popup,
+            return_socket=True,
+        )
+    except tmux_lib.SessionNameConflictError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if socket:
         if color:
             print(f"Tmux session ready with {color} status bar: {args.session_name}")
         else:
@@ -52,12 +63,16 @@ def cmd_new(args):
                     "asciinema",
                     "rec",
                     "--command",
-                    f"tmux attach-session -t {args.session_name}",
+                    f"tmux -L {socket} "
+                    f"attach-session -t {args.session_name}",
                     filename,
                 ]
             )
         else:
-            subprocess.run(["tmux", "attach-session", "-t", args.session_name])
+            subprocess.run([
+                "tmux", "-L", socket,
+                "attach-session", "-t", args.session_name,
+            ])
     else:
         print(f"Failed to create tmux session: {args.session_name}", file=sys.stderr)
         sys.exit(1)
@@ -118,6 +133,16 @@ def main():
         "--record",
         action="store_true",
         help="Record the tmux session using asciinema",
+    )
+    new_parser.add_argument(
+        "--experimental-scroll-popup",
+        action="store_true",
+        help=(
+            "Experimental: mouse-wheel-up on any pane opens a popup "
+            "viewer of the pane's piped output (via less) instead of "
+            "entering copy-mode. Installs per-session hooks and a "
+            "WheelUpPane key bind gated on @tmux_mcp_managed."
+        ),
     )
     new_parser.set_defaults(func=cmd_new)
 

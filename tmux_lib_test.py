@@ -7,6 +7,193 @@ import permissions
 from unittest.mock import MagicMock, call
 
 
+class TestSocketTopology:
+    """Tests for socket-name helpers (default_socket, scroll_popup_socket, managed_sockets)."""
+
+    def test_scroll_popup_socket_suffixes_default(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "foo")
+        assert tmux_lib.scroll_popup_socket() == "foo-experimental-scroll"
+
+    def test_scroll_popup_socket_uses_fallback_when_unset(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
+        monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(tmp_path / "missing.json"))
+        assert tmux_lib.scroll_popup_socket() == "tmux-mcp-experimental-scroll"
+
+    def test_managed_sockets_lists_both(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        sockets = tmux_lib.managed_sockets()
+        assert sockets == ["tmux-mcp", "tmux-mcp-experimental-scroll"]
+
+    def test_managed_sockets_reflects_custom_default(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "myname")
+        assert tmux_lib.managed_sockets() == [
+            "myname",
+            "myname-experimental-scroll",
+        ]
+
+
+class TestResolveSocket:
+    """resolve_socket scans managed sockets via tmux list-sessions.
+    Returns the hosting socket; raises SessionNotFoundError if missing.
+    Recomputes every call (no caching).
+    """
+
+    def _make_run(self, sessions_per_socket):
+        """Fake subprocess.run honoring a {socket: {session, ...}} map.
+
+        None as the value simulates a socket with no running server.
+        """
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            assert cmd[:2] == ["tmux", "-L"]
+            sock = cmd[2]
+            if cmd[3:4] == ["list-sessions"]:
+                value = sessions_per_socket.get(sock)
+                if value is None:
+                    return MagicMock(returncode=1, stdout="", stderr="no server")
+                return MagicMock(
+                    returncode=0,
+                    stdout="\n".join(sorted(value)) + ("\n" if value else ""),
+                    stderr="",
+                )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        return _run
+
+    def test_finds_session_on_default_socket(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib.subprocess, "run",
+            self._make_run({
+                "tmux-mcp": {"green", "blue"},
+                "tmux-mcp-experimental-scroll": set(),
+            }),
+        )
+        assert tmux_lib.resolve_socket("green") == "tmux-mcp"
+
+    def test_finds_session_on_experimental_socket(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib.subprocess, "run",
+            self._make_run({
+                "tmux-mcp": {"blue"},
+                "tmux-mcp-experimental-scroll": {"orange"},
+            }),
+        )
+        assert tmux_lib.resolve_socket("orange") == "tmux-mcp-experimental-scroll"
+
+    def test_raises_when_session_missing(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib.subprocess, "run",
+            self._make_run({
+                "tmux-mcp": {"blue"},
+                "tmux-mcp-experimental-scroll": {"orange"},
+            }),
+        )
+        with pytest.raises(tmux_lib.SessionNotFoundError):
+            tmux_lib.resolve_socket("nope")
+
+    def test_skips_sockets_with_no_server(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib.subprocess, "run",
+            self._make_run({
+                "tmux-mcp": None,
+                "tmux-mcp-experimental-scroll": {"green"},
+            }),
+        )
+        assert tmux_lib.resolve_socket("green") == "tmux-mcp-experimental-scroll"
+
+    def test_recomputes_every_call(self, monkeypatch):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        calls: list[list[str]] = []
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="green\n", stderr="")
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+
+        tmux_lib.resolve_socket("green")
+        first_call_count = len(calls)
+        tmux_lib.resolve_socket("green")
+        assert len(calls) == first_call_count * 2
+
+
+class TestPerSessionSocketPlumbing:
+    """Each public op resolves the socket via resolve_socket and uses it.
+
+    These tests pin `resolve_socket` to a known value and assert the
+    socket actually used by subprocess.run matches.
+    """
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            calls.append(cmd)
+            return MagicMock(
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+        return calls
+
+    @staticmethod
+    def _sockets_used(calls: list[list[str]]) -> set[str]:
+        out = set()
+        for cmd in calls:
+            if len(cmd) >= 3 and cmd[0] == "tmux" and cmd[1] == "-L":
+                out.add(cmd[2])
+        return out
+
+    def test_send_interrupt_uses_resolved_socket(self, monkeypatch, captured):
+        monkeypatch.setattr(
+            tmux_lib, "resolve_socket", lambda name: "tmux-mcp-experimental-scroll"
+        )
+        tmux_lib.send_interrupt("orange")
+        assert self._sockets_used(captured) == {"tmux-mcp-experimental-scroll"}
+
+    def test_get_n_last_lines_uses_resolved_socket(self, monkeypatch, captured):
+        monkeypatch.setattr(
+            tmux_lib, "resolve_socket", lambda name: "tmux-mcp-experimental-scroll"
+        )
+        tmux_lib.get_n_last_lines("orange", lines=3)
+        assert self._sockets_used(captured) == {"tmux-mcp-experimental-scroll"}
+
+    def test_send_to_terminal_uses_resolved_socket(self, monkeypatch, captured):
+        monkeypatch.setattr(
+            tmux_lib, "resolve_socket", lambda name: "tmux-mcp-experimental-scroll"
+        )
+        monkeypatch.setattr(
+            tmux_lib, "_generate_random_buffer_name", lambda prefix="": "buf"
+        )
+        tmux_lib.send_to_terminal("orange", "ls")
+        # No verify string -> never reads pane; just buffer ops
+        assert self._sockets_used(captured) == {"tmux-mcp-experimental-scroll"}
+
+    def test_execute_in_terminal_uses_resolved_socket(self, monkeypatch, captured):
+        monkeypatch.setattr(
+            tmux_lib, "resolve_socket", lambda name: "tmux-mcp-experimental-scroll"
+        )
+        tmux_lib.execute_in_terminal("orange", "ls", sync=False)
+        assert self._sockets_used(captured) == {"tmux-mcp-experimental-scroll"}
+
+    def test_propagates_session_not_found(self, monkeypatch, captured):
+        def _raise(name):
+            raise tmux_lib.SessionNotFoundError(name)
+
+        monkeypatch.setattr(tmux_lib, "resolve_socket", _raise)
+        with pytest.raises(tmux_lib.SessionNotFoundError):
+            tmux_lib.send_interrupt("ghost")
+
+
 def test_create_tmux_session_registers_permissions(monkeypatch, tmp_path):
     # Use temp permissions file
     monkeypatch.setenv("TMUX_MCP_PERMISSIONS_FILE", str(tmp_path / "permissions.json"))
@@ -47,21 +234,96 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
     # We don't assert exact full command order; just that required config was applied.
     joined = [" ".join(c) for c in calls]
 
-    assert any(j.startswith("tmux set-option -t green @tmux_mcp_managed 1") for j in joined), joined
-    assert any(j.startswith("tmux set-option -t green status on") for j in joined), joined
-    assert any(j.startswith("tmux set-option -t green status-interval 5") for j in joined), joined
+    # Plain session => default socket.
+    socket_prefix = "tmux -L tmux-mcp"
+    assert any(j.startswith(f"{socket_prefix} set-option -t green @tmux_mcp_managed 1") for j in joined), joined
+    assert any(j.startswith(f"{socket_prefix} set-option -t green status on") for j in joined), joined
+    assert any(j.startswith(f"{socket_prefix} set-option -t green status-interval 5") for j in joined), joined
     assert any(
-        "tmux set-option -t green status-right" in j and "tmux_mcp_status.py" in j
+        f"{socket_prefix} set-option -t green status-right" in j and "tmux_mcp_status.py" in j
         for j in joined
     ), joined
 
     # Binding is global (no -t <session>), but gated on @tmux_mcp_managed.
     assert any(
-        j.startswith("tmux bind-key -n C-] run-shell")
+        j.startswith(f"{socket_prefix} bind-key -n C-] run-shell")
         and "@tmux_mcp_managed" in j
         and "tmux_mcp_toggle.py" in j
         for j in joined
     ), joined
+
+class TestCreateTmuxSessionSocketChoice:
+    """Tests for socket selection inside create_tmux_session."""
+
+    @pytest.fixture
+    def stub_subprocess(self, monkeypatch):
+        """Capture all tmux calls; list-sessions returns empty by default
+        (no cross-socket dup)."""
+        calls: list[list[str]] = []
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+        return calls
+
+    @staticmethod
+    def _non_listsessions_sockets(calls):
+        return {
+            cmd[2] for cmd in calls
+            if len(cmd) >= 4
+            and cmd[0] == "tmux" and cmd[1] == "-L"
+            and cmd[3] != "list-sessions"
+        }
+
+    def test_default_session_uses_default_socket(self, monkeypatch, stub_subprocess):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        assert tmux_lib.create_tmux_session("green", scroll_popup=False) is True
+        assert self._non_listsessions_sockets(stub_subprocess) == {"tmux-mcp"}
+
+    def test_scroll_popup_session_uses_experimental_socket(
+        self, monkeypatch, stub_subprocess
+    ):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        assert tmux_lib.create_tmux_session("orange", scroll_popup=True) is True
+        assert self._non_listsessions_sockets(stub_subprocess) == {
+            "tmux-mcp-experimental-scroll"
+        }
+
+    def test_returns_socket_used(self, monkeypatch, stub_subprocess):
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+
+        assert tmux_lib.create_tmux_session(
+            "orange", scroll_popup=True, return_socket=True
+        ) == "tmux-mcp-experimental-scroll"
+        assert tmux_lib.create_tmux_session(
+            "green", scroll_popup=False, return_socket=True
+        ) == "tmux-mcp"
+
+    def test_refuses_when_name_taken_on_other_socket(self, monkeypatch):
+        """'green' lives on the default socket; requesting --scroll-popup
+        on it must hard-fail."""
+        monkeypatch.setenv("TMUX_MCP_SOCKET", "tmux-mcp")
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            # Only the dup-check probe against the non-target socket returns
+            # a name; everything else is empty.
+            if cmd[3:4] == ["list-sessions"] and cmd[2] == "tmux-mcp":
+                return MagicMock(returncode=0, stdout="green\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+
+        with pytest.raises(tmux_lib.SessionNameConflictError) as exc:
+            tmux_lib.create_tmux_session("green", scroll_popup=True)
+
+        assert exc.value.session_name == "green"
+        assert exc.value.existing_socket == "tmux-mcp"
+        assert exc.value.target_socket == "tmux-mcp-experimental-scroll"
+
 
 class TestRandomBufferName:
     """Tests for _generate_random_buffer_name function."""
@@ -295,6 +557,11 @@ class TestSendToTerminal:
         monkeypatch.setattr(tmux_lib.subprocess, "run", self.mock_run)
         monkeypatch.setattr(tmux_lib, "_verify_terminal_prompt", self.mock_verify)
         monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", self.mock_gen_name)
+        # send_to_terminal resolves the socket via resolve_socket();
+        # pin it so the call doesn't depend on real tmux state.
+        monkeypatch.setattr(
+            tmux_lib, "resolve_socket", lambda name: "tmux-mcp"
+        )
 
     def test_send_to_terminal_calls_tmux(self):
         """Verify that send_to_terminal calls the correct tmux commands in order."""
@@ -306,19 +573,20 @@ class TestSendToTerminal:
 
         assert result is True
 
+        sock = "tmux-mcp"
         expected_calls = [
             call(
-                ["tmux", "set-buffer", "-b", buffer_name, cmd],
+                ["tmux", "-L", sock, "set-buffer", "-b", buffer_name, cmd],
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session],
+                ["tmux", "-L", sock, "paste-buffer", "-p", "-b", buffer_name, "-t", session],
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["tmux", "delete-buffer", "-b", buffer_name],
+                ["tmux", "-L", sock, "delete-buffer", "-b", buffer_name],
                 capture_output=True,
                 text=True,
             ),
