@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 from colors import VALID_COLORS
 
+import config
 import permissions
 
 from pathlib import Path
@@ -22,6 +23,33 @@ PROMPT_PREFIX = "·"
 # Seconds to wait before confirming interactive mode to avoid false positives
 INTERACTIVE_DETECTION_DELAY = 1.0
 
+# Suffix appended to the default socket to derive the dedicated socket
+# for sessions that opt into the experimental scroll-popup behaviour.
+# The popup needs server-global key rebinds (WheelUpPane) that would
+# otherwise leak into non-experimental sessions on the same server.
+SCROLL_POPUP_SUFFIX = "-experimental-scroll"
+SCROLL_POPUP_MIN_TMUX_VERSION = "3.6a"
+
+
+def default_socket() -> str:
+    """Default tmux socket name. Wraps config.default_socket()."""
+    return config.default_socket()
+
+
+def scroll_popup_socket() -> str:
+    """Socket hosting sessions with the experimental scroll-popup feature."""
+    return default_socket() + SCROLL_POPUP_SUFFIX
+
+
+def managed_sockets() -> list[str]:
+    """Every tmux socket this build of tmux-buddy knows how to manage.
+
+    Default first, then the experimental-scroll socket. Iterated by
+    resolve_socket so newly-added sockets are automatically monitored
+    even when no sessions live on them yet.
+    """
+    return [default_socket(), scroll_popup_socket()]
+
 
 def _get_logger() -> logging.Logger:
     logger = logging.getLogger("tmux_mcp")
@@ -30,7 +58,7 @@ def _get_logger() -> logging.Logger:
 
     logger.setLevel(logging.DEBUG)
 
-    log_path = Path("~/.tmux-mcp-debug.log").expanduser()
+    log_path = Path("~/tmux.logs").expanduser()
     handler = logging.FileHandler(log_path)
     formatter = logging.Formatter(
         fmt="%(asctime)s %(levelname)s %(message)s",
@@ -45,6 +73,51 @@ def _get_logger() -> logging.Logger:
 log = _get_logger()
 
 
+def _run_logged(args: list[str], **kwargs):
+    log.info("subprocess.run args=%r kwargs=%r", args, kwargs)
+    return subprocess.run(args, **kwargs)
+
+
+class SessionNameConflictError(Exception):
+    """A session of the same name lives on a different managed socket."""
+
+    def __init__(self, session_name: str, existing_socket: str, target_socket: str):
+        self.session_name = session_name
+        self.existing_socket = existing_socket
+        self.target_socket = target_socket
+        super().__init__(
+            f"Session '{session_name}' already exists on socket "
+            f"'{existing_socket}'; cannot create it on '{target_socket}'."
+        )
+
+
+class SessionNotFoundError(Exception):
+    """The named session is not on any managed socket."""
+
+    def __init__(self, session_name: str):
+        self.session_name = session_name
+        super().__init__(
+            f"Session '{session_name}' was not found on any managed socket: "
+            f"{managed_sockets()}"
+        )
+
+
+def resolve_socket(session_name: str) -> str:
+    """Return the managed socket hosting `session_name`.
+
+    Scans every socket in managed_sockets() on each call (no caching).
+    Raises SessionNotFoundError if the name is not on any of them.
+    """
+    for socket in managed_sockets():
+        result = _run_logged(
+            ["tmux", "-L", socket, "list-sessions", "-F", "#S"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and session_name in result.stdout.split("\n"):
+            return socket
+    raise SessionNotFoundError(session_name)
+
+
 def is_valid_color(name: str) -> bool:
     """Check if a name is a valid color.
 
@@ -56,17 +129,11 @@ def is_valid_color(name: str) -> bool:
     return name.lower() in VALID_COLORS
 
 
-def _set_status_bar_color(session_name: str, color: str) -> bool:
-    """Set the tmux status bar background color.
-
-    Args:
-        session_name: Name of the tmux session
-        color: Color name to set
-    Returns:
-        True if successful, False otherwise
-    """
-    result = subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status-style", f"bg={color}"],
+def _set_status_bar_color(socket: str, session_name: str, color: str) -> bool:
+    """Set the tmux status bar background color on the given socket."""
+    result = _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-style", f"bg={color}"],
         capture_output=True,
         text=True,
     )
@@ -86,6 +153,12 @@ class PromptVerificationError(Exception):
     pass
 
 
+class UnsupportedTmuxVersionError(Exception):
+    """Raised when a feature requires a newer tmux version."""
+
+    pass
+
+
 # PS1 prompt to be set in the tmux session.
 TMUX_PS1 = r"·$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
 
@@ -96,95 +169,76 @@ def _repo_script_path(script_name: str) -> str:
     return str((Path(__file__).resolve().parent / "scripts" / script_name))
 
 
-# Perl source for the experimental scroll-popup log filter. Mirrors the
-# body of tmux-scroll-viewer's bin/log-view.sh: strips OSC/DCS/CSI/etc.
-# control sequences and CR-rewritten line fragments so the popup viewer
-# (less -R) only sees SGR colour codes and printable text.
-# Stored on tmux's global env and eval'd by perl via $ENV{TMUX_MCP_FILTER}
-# at popup time, so the regex source survives intact without surviving
-# multiple nested shell- and tmux-quote layers.
-_SCROLL_POPUP_FILTER = r"""
-s/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)//g;
-s/\x1b[PXk^_][^\x1b]*\x1b\\//g;
-s/\x1b\[[\d;?]*[A-LN-Za-ln-z]//g;
-s/\x1b[^\[\]PXk^_]//g;
-s/\r+\n/\n/g;
-s/[^\n]*\r//g;
-s/\A\n+//;
-"""
+def _parse_tmux_version(version_text: str) -> tuple[int, int, str]:
+    """Parse `tmux -V` output like `tmux 3.6a` into comparable parts."""
+    match = re.search(r"tmux\s+(\d+)\.(\d+)([a-z]?)", version_text.strip())
+    if not match:
+        raise ValueError(f"Unable to parse tmux version from: {version_text!r}")
+    major, minor, suffix = match.groups()
+    return int(major), int(minor), suffix or ""
 
 
-def _setup_scroll_popup(session_name: str) -> None:
-    """Apply the tmux-scroll-viewer wheel-up popup behaviour.
+def _tmux_version_at_least(current: str, minimum: str) -> bool:
+    """Return True when `current` tmux version is >= `minimum`."""
+    return _parse_tmux_version(current) >= _parse_tmux_version(f"tmux {minimum}")
 
-    Every pane mirrors raw output to /tmp/tmux-pane-<session>-<pane>.log;
-    mouse-wheel-up opens a display-popup viewer of that log via less -R
-    instead of entering copy-mode, keeping the worker pane out of any
-    window mode so `tmux send-keys` always reaches the shell. Hooks and
-    the key bind are server-global (tmux scope, not per-session).
+
+def get_tmux_version() -> str:
+    """Return the installed tmux version string from `tmux -V`."""
+    result = _run_logged(["tmux", "-V"], capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+def assert_scroll_popup_supported() -> None:
+    """Fail if the installed tmux version does not support scroll popup."""
+    version = get_tmux_version()
+    if not _tmux_version_at_least(version, SCROLL_POPUP_MIN_TMUX_VERSION):
+        raise UnsupportedTmuxVersionError(
+            "--experimental-scroll-popup requires tmux "
+            f"{SCROLL_POPUP_MIN_TMUX_VERSION}+; found {version}"
+        )
+
+
+def _setup_scroll_popup(socket: str, session_name: str) -> None:
+    """Install the wheel-up scroll-popup keybind on `socket`.
+
+    Mouse-wheel-up opens a display-popup viewer of the pane's full
+    scrollback (captured live via `tmux capture-pane -e`, then piped
+    into `less -R`) instead of entering copy-mode. The WheelUpPane
+    bind is server-global, so this must run on the experimental-scroll
+    socket only.
     """
-    # Perl filter pattern lives on tmux's global env; the popup bind
-    # below reads it via $ENV{TMUX_MCP_FILTER}, avoiding the need to
-    # shell-quote the regex through tmux + run-shell + display-popup.
-    subprocess.run(
-        ["tmux", "set-environment", "-g",
-         "TMUX_MCP_FILTER", _SCROLL_POPUP_FILTER],
+    # Marker for the popup bind to gate on.
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "@tmux_mcp_scroll_popup", "1"],
         capture_output=True, text=True,
     )
 
-    pipe_cmd = (
-        'pipe-pane -o '
-        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
-    )
-    for hook in ("session-created", "after-new-window", "after-split-window"):
-        subprocess.run(
-            ["tmux", "set-hook", "-g", hook, pipe_cmd],
-            capture_output=True, text=True,
-        )
-
-    cleanup_cmd = (
-        'run-shell '
-        '"rm -f /tmp/tmux-pane-#{hook_session_name}-#{hook_pane}.log"'
-    )
-    for hook in ("pane-exited", "pane-died"):
-        subprocess.run(
-            ["tmux", "set-hook", "-g", hook, cleanup_cmd],
-            capture_output=True, text=True,
-        )
-
-    # session-created already fired for this session before the hook was
-    # installed; start the pipe for the initial pane explicitly.
-    subprocess.run(
-        ["tmux", "pipe-pane", "-o", "-t", session_name,
-         "cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"],
+    _run_logged(
+        ["tmux", "-L", socket, "unbind-key", "-T", "root", "WheelUpPane"],
         capture_output=True, text=True,
     )
 
-    subprocess.run(
-        ["tmux", "unbind-key", "-T", "root", "WheelUpPane"],
-        capture_output=True, text=True,
-    )
-
-    # popup_cmd contains no single-quote chars, so it can be wrapped in
-    # tmux's '...' for run-shell (literal, no escape processing). The
-    # \" and \\\$ are for the outer sh that run-shell spawns: the \"s
-    # mark the inner perl-arg "..." block, and \\\$ keeps the env-var
-    # marker from being expanded at outer-sh time so the popup sh sees
-    # it intact.
+    # capture-pane -e keeps SGR colour escapes and drops everything else,
+    # so less -R sees clean text. -J unwraps tmux's visual line-wrapping,
+    # -S - asks for the full scrollback. #{pane_id} is the pane that
+    # received the wheel event, expanded by tmux before the shell runs.
     popup_cmd = (
         'tmux display-popup -E -w 90% -h 90% '
-        '"perl -0777 -pe \\"eval \\\\\\$ENV{TMUX_MCP_FILTER}\\" '
-        '< /tmp/tmux-pane-#{session_name}-#{pane_id}.log '
+        '"tmux capture-pane -e -p -J -S - -t #{pane_id} '
         '| less --mouse -R -f -X -e +G" || true'
     )
-    false_cmd = f"run-shell -b '{popup_cmd}'"
-
-    subprocess.run(
-        ["tmux", "bind-key", "-T", "root", "WheelUpPane",
-         "if-shell", "-F",
-         "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}",
+    popup_action = f"run-shell -b '{popup_cmd}'"
+    passthrough_cond = (
+        '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag},'
+        '#{!=:#{@tmux_mcp_scroll_popup},1}}'
+    )
+    _run_logged(
+        ["tmux", "-L", socket, "bind-key", "-T", "root", "WheelUpPane",
+         "if-shell", "-F", passthrough_cond,
          "send-keys -M",
-         false_cmd],
+         popup_action],
         capture_output=True, text=True,
     )
 
@@ -193,21 +247,37 @@ def create_tmux_session(
     session_name: str,
     color: str | None = None,
     scroll_popup: bool = False,
-) -> bool:
+    return_socket: bool = False,
+) -> bool | str:
     """
     Create a new detached tmux session with predefined settings and PS1.
     Attaches to existing session if one already exists.
     Args:
         session_name: Name for the tmux session
         color: Optional color name to set the status bar background
-        scroll_popup: If True, install the experimental scroll-popup
-            hooks and WheelUpPane bind (server-global).
+        scroll_popup: If True, create on the experimental-scroll socket
+            and install the wheel-up popup hooks.
+        return_socket: If True, return the socket name (str) instead of a bool.
     Returns:
-        True if session was created/attached successfully, False otherwise
+        True/socket-name on success, False on failure. Raises
+        SessionNameConflictError if the name lives on another managed socket.
     """
+    socket = scroll_popup_socket() if scroll_popup else default_socket()
+
+    # Reject cross-socket dups: tmux new-session -A only sees the target socket.
+    for other in managed_sockets():
+        if other == socket:
+            continue
+        result = _run_logged(
+            ["tmux", "-L", other, "list-sessions", "-F", "#S"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and session_name in result.stdout.split("\n"):
+            raise SessionNameConflictError(session_name, other, socket)
+
     # Create a new detached session, or attach if it already exists
-    create_result = subprocess.run(
-        ["tmux", "new-session", "-Ad", "-s", session_name],
+    create_result = _run_logged(
+        ["tmux", "-L", socket, "new-session", "-Ad", "-s", session_name],
         capture_output=True,
         text=True,
     )
@@ -216,35 +286,40 @@ def create_tmux_session(
         return False
 
     # Set scrollback buffer size
-    subprocess.run(
-        ["tmux", "set-option", "-g", "history-limit", "250000"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "history-limit", "250000"],
         capture_output=True,
         text=True,
     )
 
     # Enable mouse mode
-    subprocess.run(
-        ["tmux", "set-option", "-g", "mouse", "on"], capture_output=True, text=True
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "mouse", "on"],
+        capture_output=True, text=True,
     )
 
     # Set terminal title
-    subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "set-titles", "on"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "set-titles", "on"],
         capture_output=True, text=True
     )
-    subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "set-titles-string", "#S / #W"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "set-titles-string", "#S / #W"],
         capture_output=True, text=True
     )
 
     # Set status bar color if a valid color is provided
     if color and is_valid_color(color):
-        _set_status_bar_color(session_name, color)
+        _set_status_bar_color(socket, session_name, color)
 
     # Set the PS1 prompt
     ps1_export = f"export PS1='{TMUX_PS1}'\n"
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, ps1_export],
+    _run_logged(
+        ["tmux", "-L", socket, "send-keys", "-t", session_name, ps1_export],
         capture_output=True,
         text=True,
     )
@@ -257,71 +332,54 @@ def create_tmux_session(
     toggle_script = _repo_script_path("tmux_mcp_toggle.py")
 
     # Mark session as managed by tmux-mcp
-    subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "@tmux_mcp_managed", "1"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "@tmux_mcp_managed", "1"],
         capture_output=True,
         text=True,
     )
 
-    subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status", "on"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status", "on"],
         capture_output=True,
         text=True,
     )
-    subprocess.run(
-        ["tmux", "set-option", "-t", session_name, "status-interval", "5"],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-interval", "5"],
         capture_output=True,
         text=True,
     )
-    subprocess.run(
-        [
-            "tmux",
-            "set-option",
-            "-t",
-            session_name,
-            "status-right",
-            f"#( {status_script} --session '#S' )",
-        ],
+    _run_logged(
+        ["tmux", "-L", socket, "set-option", "-t", session_name,
+         "status-right", f"#( {status_script} --session '#S' )"],
         capture_output=True,
         text=True,
     )
 
-    # Global no-prefix key: cycle permissions and refresh status line immediately.
-    # Note: key bindings can't be scoped per-session; they are global.
-    # We gate via @tmux_mcp_managed.
-    #
-    # Key choice: Ctrl+] (rarely used by tmux defaults).
-    subprocess.run(
-        [
-            "tmux",
-            "bind-key",
-            "-n",
-            "C-]",
-            "run-shell",
-            f"[ "
-            f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
-            f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S",
-        ],
+    # Ctrl+] (global, gated on @tmux_mcp_managed): cycle permissions + refresh status.
+    _run_logged(
+        ["tmux", "-L", socket, "bind-key", "-n", "C-]", "run-shell",
+         f"[ "
+         f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
+         f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S"],
         capture_output=True,
         text=True,
     )
 
     if scroll_popup:
-        _setup_scroll_popup(session_name)
+        assert_scroll_popup_supported()
+        _setup_scroll_popup(socket, session_name)
 
-    return True
+    return socket if return_socket else True
 
 
-def _capture_pane(session_name: str) -> str:
-    """
-    Capture the current pane content.
-    Args:
-        session_name: Name of the tmux session
-    Returns:
-        The captured pane content as a string
-    """
-    result = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-S", "-", "-t", session_name],
+def _capture_pane(socket: str, session_name: str) -> str:
+    """Capture the current pane content on the given socket."""
+    result = _run_logged(
+        ["tmux", "-L", socket, "capture-pane", "-p", "-S", "-",
+         "-t", session_name],
         capture_output=True,
         text=True,
         check=True,
@@ -364,7 +422,8 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
     Returns:
         The last N lines as a string
     """
-    content = _capture_pane(session_name)
+    socket = resolve_socket(session_name)
+    content = _capture_pane(socket, session_name)
     content_lines = content.split("\n")
 
     # Strip control characters from each line
@@ -380,314 +439,147 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
             first_content = i
             break
 
-    last_content = len(cleaned_lines) - 1
+    last_content = len(cleaned_lines)
     for i in range(len(cleaned_lines) - 1, -1, -1):
         if cleaned_lines[i].strip():
-            last_content = i
+            last_content = i + 1
             break
 
-    # Get content between first and last non-empty lines (inclusive)
-    trimmed = cleaned_lines[first_content : last_content + 1]
+    trimmed_lines = cleaned_lines[first_content:last_content]
 
-    return "\n".join(trimmed[-lines:])
+    # Return last N lines
+    return "\n".join(trimmed_lines[-lines:])
 
 
-def _verify_terminal_prompt(session_name: str, verify_string: str) -> bool:
+def get_last_command(session_name: str) -> tuple[str, str] | None:
     """
-    Verify if the terminal prompt contains a specific string.
+    Get the last command and its output from the terminal.
     Args:
         session_name: Name of the tmux session
-        verify_string: String to check for in the prompt
     Returns:
-        True if the string is found, False otherwise
+        Tuple of (command, output) or None if no command found
     """
-    content = _capture_pane(session_name)
-    lines = content.rstrip("\n").split("\n")
-    # Check the last non-empty line for prompt
-    last_line = ""
-    for line in reversed(lines):
-        if line.strip():
-            last_line = line
+    socket = resolve_socket(session_name)
+    content = _capture_pane(socket, session_name)
+    lines = content.split("\n")
+
+    prompt_line_idx = None
+    prompt_text = None
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i]
+        if PROMPT_ARROW in line:
+            prompt_line_idx = i
+            prompt_text = line
             break
 
-    return verify_string in last_line
+    if prompt_line_idx is None:
+        return None
+
+    command = ""
+    if prompt_text:
+        prompt_pos = prompt_text.find(PROMPT_ARROW)
+        command_start = prompt_pos + len(PROMPT_ARROW)
+        command = prompt_text[command_start:].strip()
+
+    output_lines = lines[prompt_line_idx + 1:]
+    output = "\n".join(output_lines).rstrip()
+
+    return command, output
 
 
-def _generate_random_buffer_name(prefix: str = "") -> str:
-    """
-    Generate a random name to use as a temporary tmux buffer.
-    Args:
-        prefix: optional prefix for the buffer name
-    Returns:
-        The name of the generated buffer
-    """
-    random_characters = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    return f"{prefix}{"-" if len(prefix) > 0 else ""}{random_characters}"
-
-
-def send_to_terminal(
-    session_name: str, command: str, prompt_verify_string: str | None = None
-) -> bool:
-    """
-    Send a command to the terminal without waiting for completion.
-    Args:
-        session_name: Name of the tmux session
-        command: Command to send
-        prompt_verify_string: If provided, only send if prompt contains this
-    Returns:
-        True if command was sent, False if prompt verification failed
-    """
-    if prompt_verify_string is not None:
-        if not _verify_terminal_prompt(
-            session_name=session_name, verify_string=prompt_verify_string
-        ):
-            return False
-
-    buffer_name = _generate_random_buffer_name(prefix=session_name)
-    try:
-        subprocess.run(
-            ["tmux", "set-buffer", "-b", buffer_name, command],
-            capture_output=True, text=True
-        )
-        subprocess.run(
-            ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session_name],
-            capture_output=True, text=True
-        )
-    finally:
-        subprocess.run(
-            ["tmux", "delete-buffer", "-b", buffer_name],
-            capture_output=True, text=True
-        )
-
-    return True
-
-
-def send_interrupt(session_name: str) -> None:
-    """
-    Send CTRL+C interrupt to the terminal.
-    Args:
-        session_name: Name of the tmux session
-    """
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, "C-c"], capture_output=True, text=True
+def send_to_terminal(session_name: str, command: str) -> bool:
+    """Send a command to the terminal without executing it."""
+    socket = resolve_socket(session_name)
+    result = subprocess.run(
+        ["tmux", "-L", socket, "send-keys", "-t", session_name, command],
+        capture_output=True,
+        text=True,
     )
+    return result.returncode == 0
 
 
-def wait_for_command_completion(
-    session_name: str, timeout: float = 30, poll_interval: float = 0.001
-) -> CommandOutput | None:
-    """
-    Wait for a command to complete by polling for a new empty prompt.
-    Args:
-        session_name: Name of the tmux session
-        timeout: Maximum time to wait for command completion (seconds)
-        poll_interval: How often to check for completion (seconds)
-    Returns:
-        CommandOutput with status "free" if completed, "interactive" if
-        interactive program detected, or None if timeout
-    """
-    start_time = time.time()
-    last_output = None
-
-    interactive_hint_detected_at: float | None = None
-    interactive_hint_output: str | None = None
-
-    while time.time() - start_time < timeout:
-        time.sleep(poll_interval)
-
-        result = get_last_command(session_name)
-        if result is None:
-            continue
-
-        if result.status == "free":
-            return result
-
-        hint = _detect_interactive_mode(result.output)
-        current_time = time.time()
-
-        if hint:
-            if interactive_hint_detected_at is None:
-                interactive_hint_detected_at = current_time
-                interactive_hint_output = result.output
-            elif (
-                current_time - interactive_hint_detected_at
-                >= INTERACTIVE_DETECTION_DELAY
-            ):
-                if result.output == interactive_hint_output:
-                    return CommandOutput(
-                        prompt=result.prompt,
-                        command=result.command,
-                        output=result.output,
-                        status="interactive",
-                    )
-        else:
-            interactive_hint_detected_at = None
-            interactive_hint_output = None
-
-        last_output = result.output
-
-    if last_output is not None:
-        return CommandOutput(
-            prompt="", command="", output=last_output, status="timeout"
-        )
-    return None
+def _verify_prompt_contains(session_name: str, expected: str) -> bool:
+    """Return True if the current prompt line contains the expected substring."""
+    try:
+        lines = get_n_last_lines(session_name, 10).split("\n")
+        for line in reversed(lines):
+            if PROMPT_ARROW in line or PROMPT_PREFIX in line:
+                return expected in line
+    except Exception:
+        return False
+    return False
 
 
 def execute_in_terminal(
     session_name: str,
     command: str,
-    prompt_verify_string: str | None = None,
-    sync: bool = True,
     timeout: float = 30.0,
-    poll_interval: float = 0.001,
-) -> str | CommandOutput | None:
-    """
-    Execute a command in the terminal.
-    Args:
-        session_name: Name of the tmux session
-        command: Command to execute
-        prompt_verify_string: If provided, only execute if prompt contains this
-        sync: If True, wait for command to finish and return output
-        timeout: Maximum time to wait for command completion (seconds)
-        poll_interval: How often to check for completion (seconds)
-    Returns:
-        If sync=True: CommandOutput with output and status, or None if timeout
-        If sync=False: Empty string on success, None if verification failed
-    """
-    log.debug(f"{command=}")
-    if prompt_verify_string is not None:
-        if not _verify_terminal_prompt(
-            session_name=session_name, verify_string=prompt_verify_string
-        ):
-            raise PromptVerificationError(
-                f"Prompt does not contain '{prompt_verify_string}'"
-            )
+    prompt_verify_string: str | None = None,
+) -> CommandOutput:
+    """Execute a command and wait for completion."""
+    if prompt_verify_string and not _verify_prompt_contains(session_name, prompt_verify_string):
+        raise PromptVerificationError(
+            f"Prompt verification failed: expected '{prompt_verify_string}' in current prompt"
+        )
 
+    socket = resolve_socket(session_name)
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, command + "\n"],
+        ["tmux", "-L", socket, "send-keys", "-t", session_name, command, "Enter"],
         capture_output=True,
         text=True,
     )
-    if not sync:
-        return ""
 
-    return wait_for_command_completion(session_name, timeout, poll_interval)
+    start_time = time.time()
+    interactive_detected_at = None
+    interactive_program = None
 
+    while time.time() - start_time < timeout:
+        content = _capture_pane(socket, session_name)
+        lines = content.split("\n")
+        last_non_empty = next((line for line in reversed(lines) if line.strip()), "")
 
-def get_last_command(session_name: str, count: int | None = None):
-    """Get the most recent command(s) and their output from tmux scrollback.
+        is_prompt = PROMPT_ARROW in last_non_empty
 
-    Use this when the user asks to inspect the output of the last command.
-
-    Args:
-        session_name: Name of the tmux session.
-        count: Number of commands to return (most recent first).
-
-    Returns:
-        If count is omitted: a single CommandOutput (or None).
-        If count is provided: a list[CommandOutput].
-    """
-
-    terminal_output = _capture_pane(session_name)
-    lines = terminal_output.splitlines()
-
-    # Gather prompt indices and parse prompt+command from each prompt line.
-    prompts: list[tuple[int, str, str]] = []
-    for i, line in enumerate(lines):
-        if not line.startswith(PROMPT_PREFIX):
-            continue
-        if PROMPT_ARROW not in line:
-            continue
-
-        parts = line.split(PROMPT_ARROW, 1)
-        after_arrow = parts[1] if len(parts) > 1 else ""
-        tokens = after_arrow.strip().split()
-
-        if not tokens:
-            prompt = ""
-            command = ""
+        current_interactive = _detect_interactive_mode(content)
+        if current_interactive:
+            if interactive_program != current_interactive:
+                interactive_program = current_interactive
+                interactive_detected_at = time.time()
+            elif (time.time() - interactive_detected_at) >= INTERACTIVE_DETECTION_DELAY:
+                result = get_last_command(session_name)
+                if result:
+                    cmd, output = result
+                    return CommandOutput(prompt=last_non_empty, command=cmd, output=output, status="interactive")
+                return CommandOutput(prompt=last_non_empty, command="", output=content.rstrip(), status="interactive")
         else:
-            cmd_start = 1
-            if len(tokens) > 1 and tokens[1].startswith("git:("):
-                cmd_start = 2
-            prompt = PROMPT_ARROW + " " + " ".join(tokens[:cmd_start])
-            command = " ".join(tokens[cmd_start:])
+            interactive_program = None
+            interactive_detected_at = None
 
-        prompts.append((i, prompt, command))
+        if is_prompt:
+            result = get_last_command(session_name)
+            if result:
+                cmd, output = result
+                return CommandOutput(prompt=last_non_empty, command=cmd, output=output, status="free")
+            return CommandOutput(prompt=last_non_empty, command="", output="", status="free")
 
-    if not prompts:
-        return None if count is None else []
-
-    def _block_output(prompt_list_index: int) -> str:
-        line_idx = prompts[prompt_list_index][0]
-        next_line_idx = (
-            prompts[prompt_list_index + 1][0]
-            if prompt_list_index + 1 < len(prompts)
-            else len(lines)
-        )
-        return "\n".join(lines[line_idx + 1 : next_line_idx]).rstrip("\n")
-
-    if count is None:
-        last_line_idx, last_prompt, last_command = prompts[-1]
-
-        if last_command:
-            chosen_line_idx, chosen_prompt, chosen_command = (
-                last_line_idx,
-                last_prompt,
-                last_command,
-            )
-            status = "running"
-        elif len(prompts) < 2:
-            return None
-        else:
-            chosen_line_idx, chosen_prompt, chosen_command = prompts[-2]
-            log.debug(f"setting stats to free(1): {prompts=}; {chosen_prompt=}, {chosen_command=}, output={lines[chosen_line_idx:]}")
-            status = "free"
-
-        # Legacy output includes prompt line and runs to the end.
-        output = "\n".join(lines[chosen_line_idx:])
-        return CommandOutput(
-            prompt=chosen_prompt, command=chosen_command, output=output, status=status
-        )
-
-    if count <= 0:
-        return []
-
-    results: list[CommandOutput] = []
-    for idx_in_prompts, (_line_idx, prompt, command) in enumerate(prompts):
-        if not command.strip():
-            continue
-
-        output = _block_output(idx_in_prompts)
-        if not output.strip():
-            continue
-
-        results.append(
-            CommandOutput(prompt=prompt, command=command, output=output, status="free")
-        )
-
-    window = results[-count:]
-    window.reverse()
-    return window
-
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: tmux_lib.py <session_name>", file=sys.stderr)
-        sys.exit(1)
-
-    session_name = sys.argv[1]
+        time.sleep(0.1)
 
     result = get_last_command(session_name)
-    if result is None:
-        print("No command found", file=sys.stderr)
-        sys.exit(1)
-
-    # print(result.prompt)
-    # print(result.command)
-    # print(result.output)
-    print(result.status)
+    if result:
+        cmd, output = result
+        return CommandOutput(prompt="", command=cmd, output=output, status="running")
+    return CommandOutput(prompt="", command="", output="", status="running")
 
 
-if __name__ == "__main__":
-    main()
+def generate_session_name() -> str:
+    adjectives = [
+        "red", "blue", "green", "yellow", "purple", "orange", "pink", "brown",
+        "gray", "black", "white", "silver", "gold", "cyan", "magenta", "lime",
+        "navy", "teal", "maroon", "olive", "coral", "salmon", "violet", "indigo",
+    ]
+    nouns = [
+        "tiger", "eagle", "shark", "wolf", "bear", "fox", "lion", "hawk",
+        "panda", "otter", "falcon", "dolphin", "whale", "rabbit", "deer", "owl",
+        "storm", "river", "mountain", "forest", "ocean", "desert", "thunder", "breeze",
+    ]
+    return f"{random.choice(adjectives)}-{random.choice(nouns)}-{''.join(random.choices(string.ascii_lowercase, k=4))}"

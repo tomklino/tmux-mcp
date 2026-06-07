@@ -30,6 +30,7 @@ and finer control over the commands.
 
 * Python 3.10+
 * `tmux` installed on the system.
+* `tmux` 3.6a or newer is required when using `--experimental-scroll-popup`.
 
 ## Installation
 
@@ -155,6 +156,22 @@ To record a new tmux session, include the `--record` flag.
 Recordings are saved to `~/.tmux-session-recordings` with a filename format of
 `<session_name>_YYYY-MM-DD_HH-MM-SS.cast`. [asciinema] must be installed on the
 system to use this feature.
+
+#### Experimental scroll popup
+
+To enable the experimental scroll popup behavior, create a session with
+`--experimental-scroll-popup`:
+
+```bash
+./tmux_cli.py new green --experimental-scroll-popup
+```
+
+With this enabled, mouse wheel up opens a popup viewer for the pane's full
+scrollback instead of entering copy mode.
+
+> [!IMPORTANT]
+> `--experimental-scroll-popup` requires tmux 3.6a or newer. The CLI will fail
+> fast on older tmux versions.
 
 > [!TIP]
 > Choose a color for the name of the terminal to color code the terminal status line

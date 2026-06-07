@@ -63,6 +63,40 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
         for j in joined
     ), joined
 
+
+def test_tmux_version_at_least_handles_letter_suffixes():
+    assert tmux_lib._tmux_version_at_least("tmux 3.6a", "3.6a") is True
+    assert tmux_lib._tmux_version_at_least("tmux 3.7", "3.6a") is True
+    assert tmux_lib._tmux_version_at_least("tmux 3.6", "3.6a") is False
+    assert tmux_lib._tmux_version_at_least("tmux 3.5a", "3.6a") is False
+
+
+def test_create_tmux_session_with_scroll_popup_checks_tmux_version(monkeypatch):
+    calls: list[list[str]] = []
+
+    def _run(cmd, capture_output=True, text=True, check=False):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+    monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+    monkeypatch.setattr(tmux_lib, "assert_scroll_popup_supported", lambda: None)
+
+    assert tmux_lib.create_tmux_session("green", scroll_popup=True) is True
+
+    joined = [" ".join(c) for c in calls]
+    assert any(
+        j.startswith("tmux -L tmux-mcp-experimental-scroll set-option -t green @tmux_mcp_scroll_popup 1")
+        for j in joined
+    ), joined
+
+
+def test_assert_scroll_popup_supported_rejects_older_tmux(monkeypatch):
+    monkeypatch.setattr(tmux_lib, "get_tmux_version", lambda: "tmux 3.6")
+
+    with pytest.raises(tmux_lib.UnsupportedTmuxVersionError, match="requires tmux 3.6a\+"):
+        tmux_lib.assert_scroll_popup_supported()
+
 class TestRandomBufferName:
     """Tests for _generate_random_buffer_name function."""
 
