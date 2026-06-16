@@ -24,6 +24,10 @@ TESTABLE_FUNCTIONS = [
 ]
 
 
+# Agent launched by a bare `--with-agent` (or config `withAgent: true`).
+WITH_AGENT_DEFAULT = "claude"
+
+
 def _resolve_flag(cli_value, config_value):
     """Return cli_value if explicitly set, else config_value, else False."""
     if cli_value is not None:
@@ -31,6 +35,23 @@ def _resolve_flag(cli_value, config_value):
     if config_value is not None:
         return config_value
     return False
+
+
+def _resolve_agent(cli_value, config_value):
+    """Resolve the split-pane agent. Returns (with_agent, agent_name).
+
+    cli_value / config_value may be:
+      None        -> not requested
+      True        -> default agent (claude)
+      "<name>"    -> launch that agent command
+    The CLI value takes precedence over the config value.
+    """
+    value = cli_value if cli_value is not None else config_value
+    if value is None or value is False:
+        return False, WITH_AGENT_DEFAULT
+    if value is True:
+        return True, WITH_AGENT_DEFAULT
+    return True, value
 
 
 def cmd_new(args):
@@ -42,6 +63,7 @@ def cmd_new(args):
     scroll_popup = _resolve_flag(
         args.experimental_scroll_popup, cfg.get("experimental_scroll_popup")
     )
+    with_claude, agent = _resolve_agent(args.with_agent, cfg.get("with_agent"))
 
     if record:
         if shutil.which("asciinema") is None:
@@ -56,6 +78,8 @@ def cmd_new(args):
             args.session_name,
             color=color,
             scroll_popup=scroll_popup,
+            with_claude=with_claude,
+            agent=agent,
             return_socket=True,
         )
     except tmux_lib.SessionNameConflictError as exc:
@@ -166,6 +190,20 @@ def main():
             "gated on @tmux_mcp_scroll_popup. "
             "(--no-experimental-scroll-popup overrides a config-file "
             "default of true)"
+        ),
+    )
+    new_parser.add_argument(
+        "--with-agent",
+        nargs="?",
+        const=WITH_AGENT_DEFAULT,
+        default=None,
+        metavar="AGENT",
+        help=(
+            "Split the window side-by-side and launch an agent in the right "
+            "pane, with added context telling it the terminal it controls "
+            "is named after the session. MCP keeps driving the left shell "
+            f"pane. Bare --with-agent launches '{WITH_AGENT_DEFAULT}'; pass "
+            "--with-agent=<cmd> to launch a different agent."
         ),
     )
     new_parser.set_defaults(func=cmd_new)

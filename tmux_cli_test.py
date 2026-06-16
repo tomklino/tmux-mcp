@@ -18,11 +18,12 @@ class TestTmuxCli(unittest.TestCase):
     @mock.patch('tmux_cli.print')
     def test_cmd_new_no_record(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
         mock_create_tmux_session.return_value = True
-        
+
         args = mock.Mock()
         args.session_name = 'test_session'
         args.record = False
         args.experimental_scroll_popup = False
+        args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
             tmux_cli.cmd_new(args)
@@ -31,6 +32,8 @@ class TestTmuxCli(unittest.TestCase):
             'test_session',
             color=None,
             scroll_popup=False,
+            with_claude=False,
+            agent='claude',
             return_socket=True,
         )
         mock_subprocess_run.assert_called_once_with([
@@ -67,6 +70,7 @@ class TestTmuxCli(unittest.TestCase):
         args.session_name = 'test_recorded_session'
         args.record = True
         args.experimental_scroll_popup = False
+        args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
             tmux_cli.cmd_new(args)
@@ -77,6 +81,8 @@ class TestTmuxCli(unittest.TestCase):
             'test_recorded_session',
             color=None,
             scroll_popup=False,
+            with_claude=False,
+            agent='claude',
             return_socket=True,
         )
         
@@ -109,6 +115,7 @@ class TestTmuxCli(unittest.TestCase):
         args.session_name = 'test_session_no_asciinema'
         args.record = True
         args.experimental_scroll_popup = False
+        args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
             with self.assertRaises(SystemExit):
@@ -140,6 +147,7 @@ class TestTmuxCli(unittest.TestCase):
         args.session_name = 'test_session'
         args.record = False
         args.experimental_scroll_popup = True
+        args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
             with self.assertRaises(SystemExit):
@@ -149,6 +157,8 @@ class TestTmuxCli(unittest.TestCase):
             'test_session',
             color=None,
             scroll_popup=True,
+            with_claude=False,
+            agent='claude',
             return_socket=True,
         )
         mock_sys_exit.assert_called_once_with(1)
@@ -156,6 +166,107 @@ class TestTmuxCli(unittest.TestCase):
             '--experimental-scroll-popup requires tmux 3.6a+',
             mock_stderr.getvalue()
         )
+
+    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_with_agent_bare_flag_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
+        mock_create_tmux_session.return_value = True
+
+        # Bare --with-agent stores the sentinel default value.
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = False
+        args.experimental_scroll_popup = False
+        args.with_agent = tmux_cli.WITH_AGENT_DEFAULT
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={}):
+            tmux_cli.cmd_new(args)
+
+        mock_create_tmux_session.assert_called_once_with(
+            'green',
+            color='green',
+            scroll_popup=False,
+            with_claude=True,
+            agent='claude',
+            return_socket=True,
+        )
+
+    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_with_agent_custom_value(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
+        mock_create_tmux_session.return_value = True
+
+        # --with-agent=pi launches a custom agent.
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = False
+        args.experimental_scroll_popup = False
+        args.with_agent = 'pi'
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={}):
+            tmux_cli.cmd_new(args)
+
+        mock_create_tmux_session.assert_called_once_with(
+            'green',
+            color='green',
+            scroll_popup=False,
+            with_claude=True,
+            agent='pi',
+            return_socket=True,
+        )
+
+    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_with_agent_defaults_from_config(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
+        mock_create_tmux_session.return_value = True
+
+        # CLI flag unset (None) -> config withAgent string should be used.
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = None
+        args.experimental_scroll_popup = None
+        args.with_agent = None
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={'with_agent': 'pi'}):
+            tmux_cli.cmd_new(args)
+
+        mock_create_tmux_session.assert_called_once_with(
+            'green',
+            color='green',
+            scroll_popup=False,
+            with_claude=True,
+            agent='pi',
+            return_socket=True,
+        )
+
+    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_with_agent_config_true_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
+        mock_create_tmux_session.return_value = True
+
+        # config withAgent: true -> default agent (claude).
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = None
+        args.experimental_scroll_popup = None
+        args.with_agent = None
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={'with_agent': True}):
+            tmux_cli.cmd_new(args)
+
+        mock_create_tmux_session.assert_called_once_with(
+            'green',
+            color='green',
+            scroll_popup=False,
+            with_claude=True,
+            agent='claude',
+            return_socket=True,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

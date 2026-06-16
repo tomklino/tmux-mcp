@@ -5,8 +5,8 @@ Holds the default socket name. Resolution order, highest priority first:
   2. defaultSocket field in the config JSON file
   3. literal fallback "tmux-mcp"
 
-Session flag defaults (record, experimentalScrollPopup) can also be set
-in the config file and are overridden by explicit CLI arguments.
+Session flag defaults (record, experimentalScrollPopup, withAgent) can also
+be set in the config file and are overridden by explicit CLI arguments.
 
 The config file path follows the same convention as permissions.py:
   1. TMUX_MCP_CONFIG_FILE environment variable (full path)
@@ -54,13 +54,17 @@ def default_socket() -> str:
 def session_defaults() -> dict:
     """Return per-session flag defaults from the config file.
 
-    Keys: 'record', 'experimental_scroll_popup'.
-    Values are True/False when set in config, None when absent.
+    Keys: 'record', 'experimental_scroll_popup', 'with_agent'.
     CLI arguments take precedence over these values.
 
     Config JSON keys:
-      record                 -> bool
+      record                  -> bool
       experimentalScrollPopup -> bool
+      withAgent               -> str | bool
+
+    record and experimental_scroll_popup are True/False when set, None when
+    absent. with_agent is the agent command name (str), True to request the
+    default agent without naming it, or None when absent/invalid.
     """
     try:
         raw = config_file_path().read_text(encoding="utf-8")
@@ -75,5 +79,13 @@ def session_defaults() -> dict:
     ]:
         val = data.get(json_key)
         result[dest] = bool(val) if isinstance(val, bool) else None
+
+    agent = data.get("withAgent")
+    if isinstance(agent, str) and agent:
+        result["with_agent"] = agent
+    elif agent is True:
+        result["with_agent"] = True
+    else:
+        result["with_agent"] = None
 
     return result
