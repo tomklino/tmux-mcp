@@ -47,21 +47,230 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
     # We don't assert exact full command order; just that required config was applied.
     joined = [" ".join(c) for c in calls]
 
-    assert any(j.startswith("tmux set-option -t green @tmux_mcp_managed 1") for j in joined), joined
-    assert any(j.startswith("tmux set-option -t green status on") for j in joined), joined
-    assert any(j.startswith("tmux set-option -t green status-interval 5") for j in joined), joined
+    assert any(j.startswith("tmux -L tmux-mcp set-option -t green @tmux_mcp_managed 1") for j in joined), joined
+    assert any(j.startswith("tmux -L tmux-mcp set-option -t green status on") for j in joined), joined
+    assert any(j.startswith("tmux -L tmux-mcp set-option -t green status-interval 5") for j in joined), joined
     assert any(
-        "tmux set-option -t green status-right" in j and "tmux_mcp_status.py" in j
+        "tmux -L tmux-mcp set-option -t green status-right" in j and "tmux_mcp_status.py" in j
         for j in joined
     ), joined
 
     # Binding is global (no -t <session>), but gated on @tmux_mcp_managed.
     assert any(
-        j.startswith("tmux bind-key -n C-] run-shell")
+        j.startswith("tmux -L tmux-mcp bind-key -n C-] run-shell")
         and "@tmux_mcp_managed" in j
         and "tmux_mcp_toggle.py" in j
         for j in joined
     ), joined
+
+
+def test_tmux_version_at_least_handles_letter_suffixes():
+    assert tmux_lib._tmux_version_at_least("tmux 3.6a", "3.6a") is True
+    assert tmux_lib._tmux_version_at_least("tmux 3.7", "3.6a") is True
+    assert tmux_lib._tmux_version_at_least("tmux 3.6", "3.6a") is False
+    assert tmux_lib._tmux_version_at_least("tmux 3.5a", "3.6a") is False
+
+
+def test_create_tmux_session_with_scroll_popup_checks_tmux_version(monkeypatch):
+    calls: list[list[str]] = []
+
+    def _run(cmd, capture_output=True, text=True, check=False):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+    monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+    monkeypatch.setattr(tmux_lib, "assert_scroll_popup_supported", lambda: None)
+
+    assert tmux_lib.create_tmux_session("green", scroll_popup=True) is True
+
+    joined = [" ".join(c) for c in calls]
+    assert any(
+        j.startswith("tmux -L tmux-mcp-experimental-scroll set-option -t green @tmux_mcp_scroll_popup 1")
+        for j in joined
+    ), joined
+
+
+def test_assert_scroll_popup_supported_rejects_older_tmux(monkeypatch):
+    monkeypatch.setattr(tmux_lib, "get_tmux_version", lambda: "tmux 3.6")
+
+    with pytest.raises(tmux_lib.UnsupportedTmuxVersionError, match=r"requires tmux 3.6a\+"):
+        tmux_lib.assert_scroll_popup_supported()
+
+
+def test_scroll_popup_matches_pane_geometry(monkeypatch):
+    """The wheel-up popup should overlay the scrolled pane exactly.
+
+    It must size to the pane (not the whole window) and be positioned on
+    top of the pane that received the wheel event, so that in a split
+    layout the popup covers only that pane.
+    """
+    calls: list[list[str]] = []
+
+    def _run(cmd, capture_output=True, text=True, check=False):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(tmux_lib, "_run_logged", _run)
+
+    tmux_lib._setup_scroll_popup("tmux-mcp-experimental-scroll", "green")
+
+    bind_calls = [c for c in calls if "bind-key" in c and "WheelUpPane" in c]
+    assert bind_calls, calls
+    popup = " ".join(bind_calls[-1])
+
+    # Borderless, sized to the pane and positioned over the pane's top-left.
+    assert "display-popup" in popup
+    assert "-B" in popup
+    assert "-w #{pane_width}" in popup
+    assert "-h #{pane_height}" in popup
+    assert "-x #{pane_left}" in popup
+    assert "-y #{pane_top}" in popup
+    # No window-filling sizing left over.
+    assert "100%" not in popup
+    assert "90%" not in popup
+    # less shows the current line and percent-through-file in its prompt.
+    less_args = popup.split("less", 1)[1]
+    assert "-M" in less_args
+
+class TestCreateSessionTargetPaneAndClaude:
+    """create_tmux_session saves the shell pane and can split with an agent."""
+
+    @staticmethod
+    def _run_factory(calls):
+        def _run(cmd, capture_output=True, text=True, check=False):
+            calls.append(cmd)
+            if "display-message" in cmd:
+                return MagicMock(returncode=0, stdout="%5\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return _run
+
+    def test_saves_shell_pane_id(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib, "_run_logged", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        assert tmux_lib.create_tmux_session("green") is True
+
+        joined = [" ".join(c) for c in calls]
+        assert any(
+            j.startswith("tmux -L tmux-mcp set-option -t green @tmux_mcp_target_pane %5")
+            for j in joined
+        ), joined
+
+    def test_no_split_without_claude(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib, "_run_logged", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        tmux_lib.create_tmux_session("green")
+
+        joined = [" ".join(c) for c in calls]
+        assert not any("split-window" in j for j in joined), joined
+
+    def test_with_claude_splits_horizontally_and_launches_claude(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib, "_run_logged", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        assert tmux_lib.create_tmux_session("green", with_claude=True) is True
+
+        split = [c for c in calls if "split-window" in c]
+        assert split, calls
+        split_cmd = split[0]
+        assert "-h" in split_cmd
+        # split from the saved shell pane so shell stays on the left
+        assert "%5" in split_cmd
+        joined = " ".join(split_cmd)
+        assert "claude" in joined
+        assert "--append-system-prompt" in joined
+        # the agent is told which terminal it controls
+        assert "green" in joined
+
+    def test_with_custom_agent(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib, "_run_logged", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        tmux_lib.create_tmux_session("green", with_claude=True, agent="myagent")
+
+        split = [c for c in calls if "split-window" in c]
+        assert split, calls
+        joined = " ".join(split[0])
+        assert "myagent" in joined
+        assert "claude" not in joined
+
+
+class TestResolveTarget:
+    """Tests for resolve_target: MCP must drive the saved shell pane_id."""
+
+    def test_uses_saved_pane_id(self, monkeypatch):
+        monkeypatch.setattr(tmux_lib, "resolve_socket", lambda *_: "tmux-mcp")
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            assert "@tmux_mcp_target_pane" in cmd
+            return MagicMock(returncode=0, stdout="%5\n", stderr="")
+
+        monkeypatch.setattr(tmux_lib, "_run_logged", _run)
+
+        assert tmux_lib.resolve_target("green") == ("tmux-mcp", "%5")
+
+    def test_falls_back_to_session_name_when_unset(self, monkeypatch):
+        monkeypatch.setattr(tmux_lib, "resolve_socket", lambda *_: "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib,
+            "_run_logged",
+            lambda *a, **k: MagicMock(returncode=0, stdout="", stderr=""),
+        )
+
+        assert tmux_lib.resolve_target("green") == ("tmux-mcp", "green")
+
+
+class TestPaneTargeting:
+    """All interaction functions must target the resolved pane, not the session."""
+
+    def test_send_to_terminal_targets_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+        monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", lambda *a, **k: "buf-1")
+
+        assert tmux_lib.send_to_terminal("green", "ls") is True
+
+        paste = [c for c in mock_run.call_args_list if "paste-buffer" in c.args[0]]
+        assert paste, mock_run.call_args_list
+        assert "%7" in paste[0].args[0]
+        assert "green" not in paste[0].args[0]
+
+    def test_send_interrupt_targets_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+
+        tmux_lib.send_interrupt("green")
+
+        sent = mock_run.call_args_list[-1].args[0]
+        assert "%7" in sent
+        assert "C-c" in sent
+
+    def test_execute_in_terminal_sends_to_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+        monkeypatch.setattr(tmux_lib, "wait_for_command_completion", lambda *a, **k: None)
+
+        tmux_lib.execute_in_terminal("green", "ls", sync=False)
+
+        send = [c for c in mock_run.call_args_list if "send-keys" in c.args[0]]
+        assert send, mock_run.call_args_list
+        assert "%7" in send[0].args[0]
+
 
 class TestRandomBufferName:
     """Tests for _generate_random_buffer_name function."""
@@ -283,6 +492,71 @@ ends with colon:"""
         assert tmux_lib._detect_interactive_mode(output) is None
 
 
+class TestGetLastCommand:
+    """Tests for the get_last_command function."""
+
+    def test_multiple_commands_filters_empty_output_and_returns_requested_count(self, monkeypatch):
+        """Split scrollback into (prompt, command, output) blocks and filter empty outputs."""
+
+        scrollback = "\n".join(
+            [
+                "some older noise",
+                "·tmux-mcp __> ~/proj echo first",
+                "first-out",
+                "·tmux-mcp __> ~/proj true",
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out-line-1",
+                "second-out-line-2",
+                "·tmux-mcp __> ~/proj",  # idle prompt
+                "",
+            ]
+        )
+
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "blue"))
+        monkeypatch.setattr(tmux_lib, "_capture_pane", lambda socket, target: scrollback)
+
+        # New behavior: count parameter, returns list[CommandOutput]
+        results = tmux_lib.get_last_command("blue", count=2)
+
+        # Oldest-first within the returned window: most recent first
+        assert [r.command for r in results] == ["echo second", "echo first"]
+        assert results[0].output == "second-out-line-1\nsecond-out-line-2"
+        assert results[1].output == "first-out"
+        assert all(r.status == "free" for r in results)
+
+    def test_idle_terminal_returns_second_to_last_prompt_block(self, monkeypatch):
+        """When the last prompt has no command, get_last_command uses the previous prompt."""
+
+        scrollback = "\n".join(
+            [
+                "some older noise",
+                "·tmux-mcp __> ~/proj echo first",
+                "first-out",
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out",
+                "·tmux-mcp __> ~/proj",  # idle prompt (no command)
+                "",
+            ]
+        )
+
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "blue"))
+        monkeypatch.setattr(tmux_lib, "_capture_pane", lambda socket, target: scrollback)
+
+        result = tmux_lib.get_last_command("blue")
+
+        assert result is not None
+        assert result.status == "free"
+        assert result.command == "echo second"
+        # Current implementation includes the prompt line in output and captures to end
+        assert result.output == "\n".join(
+            [
+                "·tmux-mcp __> ~/proj echo second",
+                "second-out",
+                "·tmux-mcp __> ~/proj",
+            ]
+        )
+
+
 class TestSendToTerminal:
     """Tests for the send_to_terminal function."""
 
@@ -293,6 +567,9 @@ class TestSendToTerminal:
         self.mock_gen_name = MagicMock(return_value="test-buffer-123")
 
         monkeypatch.setattr(tmux_lib.subprocess, "run", self.mock_run)
+        monkeypatch.setattr(
+            tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "test-session")
+        )
         monkeypatch.setattr(tmux_lib, "_verify_terminal_prompt", self.mock_verify)
         monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", self.mock_gen_name)
 
@@ -301,6 +578,7 @@ class TestSendToTerminal:
         session = "test-session"
         cmd = "ls -l"
         buffer_name = "test-buffer-123"  # match the mock return value
+        socket = "tmux-mcp"
 
         result = tmux_lib.send_to_terminal(session, cmd)
 
@@ -308,17 +586,18 @@ class TestSendToTerminal:
 
         expected_calls = [
             call(
-                ["tmux", "set-buffer", "-b", buffer_name, cmd],
+                ["tmux", "-L", socket, "set-buffer", "-b", buffer_name, cmd],
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["tmux", "paste-buffer", "-p", "-b", buffer_name, "-t", session],
+                ["tmux", "-L", socket, "paste-buffer", "-p", "-b", buffer_name,
+                 "-t", session],
                 capture_output=True,
                 text=True,
             ),
             call(
-                ["tmux", "delete-buffer", "-b", buffer_name],
+                ["tmux", "-L", socket, "delete-buffer", "-b", buffer_name],
                 capture_output=True,
                 text=True,
             ),

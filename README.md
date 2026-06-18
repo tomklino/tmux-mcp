@@ -30,6 +30,7 @@ and finer control over the commands.
 
 * Python 3.10+
 * `tmux` installed on the system.
+* `tmux` 3.6a or newer is required when using `--experimental-scroll-popup`.
 
 ## Installation
 
@@ -155,6 +156,75 @@ To record a new tmux session, include the `--record` flag.
 Recordings are saved to `~/.tmux-session-recordings` with a filename format of
 `<session_name>_YYYY-MM-DD_HH-MM-SS.cast`. [asciinema] must be installed on the
 system to use this feature.
+
+#### Experimental scroll popup
+
+To enable the experimental scroll popup behavior, create a session with
+`--experimental-scroll-popup`:
+
+```bash
+./tmux_cli.py new green --experimental-scroll-popup
+```
+
+With this enabled, mouse wheel up opens a borderless popup viewer for the
+pane's full scrollback instead of entering copy mode. The popup is sized to
+and positioned exactly over the pane that was scrolled, so in a split layout
+(e.g. with `--with-agent`) it covers only that pane.
+
+> [!IMPORTANT]
+> `--experimental-scroll-popup` requires tmux 3.6a or newer. The CLI will fail
+> fast on older tmux versions.
+
+#### Start with an agent in a split pane
+
+To start the session split side-by-side with an agent running in the right
+pane, use `--with-agent`:
+
+```bash
+# bare flag launches claude (the default agent)
+./tmux_cli.py new green --with-agent
+
+# or name a different agent command
+./tmux_cli.py new green --with-agent=pi
+```
+
+The shell stays in the left pane and the agent (default: `claude`) starts in
+the right pane, which is left active so you can talk to it immediately. The
+agent is launched with `--append-system-prompt` context telling it the name of
+the terminal it controls (here, `green`) so it passes the correct
+`session_name` to the tmux MCP tools.
+
+The session's shell pane id is saved as the `@tmux_mcp_target_pane` option at
+creation time, so the MCP keeps driving that shell pane even after you move or
+re-lay-out the window.
+
+#### Configuration file (default settings)
+
+Defaults for the session flags can be set in a config file so you don't have to
+pass them every time. Resolution order for the path:
+
+1. `TMUX_MCP_CONFIG_FILE` environment variable (full path)
+2. `$XDG_CONFIG_HOME/tmux-mcp/config.json`
+3. `~/.config/tmux-mcp/config.json`
+
+Supported keys (all optional):
+
+```json
+{
+  "record": false,
+  "experimentalScrollPopup": false,
+  "withAgent": "claude"
+}
+```
+
+`record` and `experimentalScrollPopup` are booleans. `withAgent` may be an
+agent command name (e.g. `"pi"`), or `true` to use the default agent
+(`claude`).
+
+CLI arguments always override the config file. For example, with
+`"withAgent": "claude"` in the config, `./tmux_cli.py new green` without
+`--with-agent` still launches the agent, while passing `--with-agent=pi`
+overrides it to launch `pi` instead.
 
 > [!TIP]
 > Choose a color for the name of the terminal to color code the terminal status line
