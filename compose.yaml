@@ -1,0 +1,8 @@
+services:
+  tmux-mcp-dev:
+    build: .
+    container_name: tmux-mcp-dev
+    volumes:
+      - .:/src
+    stdin_open: true
+    tty: true
