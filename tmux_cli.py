@@ -10,6 +10,7 @@ import sys
 import datetime
 import os
 from pathlib import Path
+import config
 import tmux_lib
 
 
@@ -27,6 +28,8 @@ TESTABLE_FUNCTIONS = [
 
 def cmd_new(args):
     """Create a new tmux session and attach to it."""
+    config.default_socket()  # creates config.yaml with defaults on first run
+
     # Check if session name is a valid color
     color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
 
