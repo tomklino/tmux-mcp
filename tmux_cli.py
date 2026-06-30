@@ -2,12 +2,14 @@
 
 import argparse
 import inspect
+import json
 import subprocess
 import shutil
 import sys
 
 import datetime
 import os
+from pathlib import Path
 import tmux_lib
 
 
@@ -122,6 +124,109 @@ def cmd_test(args):
         print(result)
 
 
+MCP_SERVER_COMMAND = "tmux-mcp-server"
+
+
+def _prompt_yes(question: str) -> bool:
+    answer = input(f"  {question} [Y/n] ").strip().lower()
+    return answer in ("", "y", "yes")
+
+
+def _configure_claude_code() -> bool:
+    result = subprocess.run(
+        ["claude", "mcp", "add", "--scope", "user", "tmux", MCP_SERVER_COMMAND],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  Error: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_opencode(config_path: Path) -> bool:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  Error reading config: {exc}", file=sys.stderr)
+        return False
+
+    data.setdefault("mcp", {})["tmux"] = {
+        "type": "local",
+        "command": [MCP_SERVER_COMMAND],
+        "enabled": True,
+    }
+
+    try:
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error writing config: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_pi(config_path: Path) -> bool:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  Error reading config: {exc}", file=sys.stderr)
+        return False
+
+    data.setdefault("mcpServers", {})["tmux"] = {
+        "command": MCP_SERVER_COMMAND,
+        "args": [],
+    }
+
+    try:
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error writing config: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_setup_agents(args):
+    """Detect installed agents and configure tmux-mcp for each."""
+    found_any = False
+    configured = 0
+
+    if shutil.which("claude"):
+        found_any = True
+        print("Found: Claude Code")
+        if _prompt_yes("Configure tmux-mcp for Claude Code?"):
+            if _configure_claude_code():
+                print("  Configured.")
+                configured += 1
+
+    opencode_config = Path.home() / ".config" / "opencode" / "opencode.json"
+    if opencode_config.exists():
+        found_any = True
+        print("Found: OpenCode")
+        if _prompt_yes("Configure tmux-mcp for OpenCode?"):
+            if _configure_opencode(opencode_config):
+                print("  Configured.")
+                configured += 1
+
+    pi_config = Path.home() / ".pi" / "agent" / "mcp.json"
+    if pi_config.exists():
+        found_any = True
+        print("Found: Pi Agent")
+        if _prompt_yes("Configure tmux-mcp for Pi Agent?"):
+            if _configure_pi(pi_config):
+                print("  Configured.")
+                configured += 1
+
+    if not found_any:
+        print("No supported agents detected.")
+        print("Manually add tmux-mcp-server to your agent's MCP config.")
+        return
+
+    if configured == 0:
+        print("No agents configured.")
+    else:
+        print(f"\nConfigured {configured} agent(s). Restart your agent to pick up the changes.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tmux session management CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -155,6 +260,13 @@ def main():
         "args", nargs="*", help="Arguments to pass to the function"
     )
     test_parser.set_defaults(func=cmd_test)
+
+    # setup-agents subcommand
+    setup_parser = subparsers.add_parser(
+        "setup-agents",
+        help="Detect installed agents and configure tmux-mcp for each",
+    )
+    setup_parser.set_defaults(func=cmd_setup_agents)
 
     args = parser.parse_args()
     args.func(args)

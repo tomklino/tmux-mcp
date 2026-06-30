@@ -36,13 +36,20 @@ def default_socket() -> str:
     if env:
         return env
 
+    path = config_file_path()
     try:
-        raw = config_file_path().read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
         sock = data.get("defaultSocket")
         if isinstance(sock, str) and sock:
             return sock
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"defaultSocket": FALLBACK_SOCKET}, indent=2),
+            encoding="utf-8",
+        )
+    except (json.JSONDecodeError, OSError):
         pass
 
     return FALLBACK_SOCKET

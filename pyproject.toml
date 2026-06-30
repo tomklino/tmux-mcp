@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tmux-mcp"
+version = "0.1.0"
+description = "MCP server for sharing tmux sessions with AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mcp"]
+
+[project.scripts]
+tmux-cli = "tmux_cli:main"
+tmux-mcp-server = "tmux_mcp:main"
+
+[tool.setuptools]
+py-modules = ["tmux_cli", "tmux_lib", "config", "permissions", "colors"]
