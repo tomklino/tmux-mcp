@@ -1,15 +1,14 @@
 """Tests for config loading (default socket name)."""
 
-import json
-
 import pytest
+import yaml
 
 import config
 
 
 def test_default_socket_env_var_takes_precedence(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"defaultSocket": "filesock"}))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.dump({"defaultSocket": "filesock"}))
     monkeypatch.setenv("TMUX_MCP_SOCKET", "envsock")
     monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(cfg))
 
@@ -17,8 +16,8 @@ def test_default_socket_env_var_takes_precedence(monkeypatch, tmp_path):
 
 
 def test_default_socket_reads_config_file(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"defaultSocket": "filesock"}))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.dump({"defaultSocket": "filesock"}))
     monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
     monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(cfg))
 
@@ -27,14 +26,14 @@ def test_default_socket_reads_config_file(monkeypatch, tmp_path):
 
 def test_default_socket_fallback_when_no_env_or_file(monkeypatch, tmp_path):
     monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
-    monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(tmp_path / "missing.yaml"))
 
     assert config.default_socket() == "tmux-mcp"
 
 
-def test_default_socket_fallback_when_config_invalid_json(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text("not valid json")
+def test_default_socket_fallback_when_config_invalid_yaml(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("key: [unclosed bracket")
     monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
     monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(cfg))
 
@@ -42,16 +41,28 @@ def test_default_socket_fallback_when_config_invalid_json(monkeypatch, tmp_path)
 
 
 def test_default_socket_fallback_when_key_missing(monkeypatch, tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"unrelated": "value"}))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.dump({"unrelated": "value"}))
     monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
     monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(cfg))
 
     assert config.default_socket() == "tmux-mcp"
 
 
+def test_default_socket_creates_config_file_on_first_access(monkeypatch, tmp_path):
+    monkeypatch.delenv("TMUX_MCP_SOCKET", raising=False)
+    cfg = tmp_path / "tmux-mcp" / "config.yaml"
+    monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(cfg))
+
+    assert not cfg.exists()
+    result = config.default_socket()
+    assert result == "tmux-mcp"
+    assert cfg.exists()
+    assert "defaultSocket" in cfg.read_text()
+
+
 def test_config_file_path_env_override(monkeypatch, tmp_path):
-    target = tmp_path / "custom.json"
+    target = tmp_path / "custom.yaml"
     monkeypatch.setenv("TMUX_MCP_CONFIG_FILE", str(target))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
@@ -62,7 +73,7 @@ def test_config_file_path_uses_xdg(monkeypatch, tmp_path):
     monkeypatch.delenv("TMUX_MCP_CONFIG_FILE", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    assert config.config_file_path() == tmp_path / "tmux-mcp" / "config.json"
+    assert config.config_file_path() == tmp_path / "tmux-mcp" / "config.yaml"
 
 
 def test_config_file_path_default(monkeypatch, tmp_path):
@@ -70,7 +81,7 @@ def test_config_file_path_default(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    assert config.config_file_path() == tmp_path / ".config" / "tmux-mcp" / "config.json"
+    assert config.config_file_path() == tmp_path / ".config" / "tmux-mcp" / "config.yaml"
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "MCP server for sharing tmux sessions with AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["mcp"]
+dependencies = ["mcp", "pyyaml"]
 
 [project.scripts]
 tmux-cli = "tmux_cli:main"
