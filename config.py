@@ -59,3 +59,38 @@ def default_socket() -> str:
         pass
 
     return FALLBACK_SOCKET
+
+
+def session_defaults() -> dict:
+    """Return per-session flag defaults from the config file.
+
+    Keys: 'record', 'experimental_scroll_popup', 'with_agent'.
+    CLI arguments take precedence over these values.
+
+    Config YAML keys:
+      record                  -> bool
+      experimentalScrollPopup -> bool
+      withAgent               -> str | bool
+    """
+    try:
+        data = yaml.safe_load(config_file_path().read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, yaml.YAMLError, OSError):
+        data = {}
+
+    result: dict = {}
+    for dest, yaml_key in [
+        ("record", "record"),
+        ("experimental_scroll_popup", "experimentalScrollPopup"),
+    ]:
+        val = data.get(yaml_key)
+        result[dest] = bool(val) if isinstance(val, bool) else None
+
+    agent = data.get("withAgent")
+    if isinstance(agent, str) and agent:
+        result["with_agent"] = agent
+    elif agent is True:
+        result["with_agent"] = True
+    else:
+        result["with_agent"] = None
+
+    return result
