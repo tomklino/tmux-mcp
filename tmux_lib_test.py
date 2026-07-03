@@ -545,6 +545,142 @@ ends with colon:"""
         assert tmux_lib._detect_interactive_mode(output) is None
 
 
+class TestCreateSessionTargetPaneAndClaude:
+    """create_tmux_session saves the shell pane and can split with an agent."""
+
+    @staticmethod
+    def _run_factory(calls):
+        def _run(cmd, capture_output=True, text=True, check=False):
+            calls.append(cmd)
+            if "display-message" in cmd:
+                return MagicMock(returncode=0, stdout="%5\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return _run
+
+    def test_saves_shell_pane_id(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        assert tmux_lib.create_tmux_session("green") is True
+
+        joined = [" ".join(c) for c in calls]
+        assert any(
+            j.startswith("tmux -L tmux-mcp set-option -t green @tmux_mcp_target_pane %5")
+            for j in joined
+        ), joined
+
+    def test_no_split_without_claude(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        tmux_lib.create_tmux_session("green")
+
+        joined = [" ".join(c) for c in calls]
+        assert not any("split-window" in j for j in joined), joined
+
+    def test_with_claude_splits_horizontally_and_launches_claude(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        assert tmux_lib.create_tmux_session("green", with_claude=True) is True
+
+        split = [c for c in calls if "split-window" in c]
+        assert split, calls
+        split_cmd = split[0]
+        assert "-h" in split_cmd
+        assert "%5" in split_cmd
+        joined = " ".join(split_cmd)
+        assert "claude" in joined
+        assert "--append-system-prompt" in joined
+        assert "green" in joined
+
+    def test_with_custom_agent(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        tmux_lib.create_tmux_session("green", with_claude=True, agent="myagent")
+
+        split = [c for c in calls if "split-window" in c]
+        assert split, calls
+        joined = " ".join(split[0])
+        assert "myagent" in joined
+        assert "claude" not in joined
+
+
+class TestResolveTarget:
+    """Tests for resolve_target: MCP must drive the saved shell pane_id."""
+
+    def test_uses_saved_pane_id(self, monkeypatch):
+        monkeypatch.setattr(tmux_lib, "resolve_socket", lambda *_: "tmux-mcp")
+
+        def _run(cmd, capture_output=True, text=True, check=False):
+            if "show-option" in cmd and "@tmux_mcp_target_pane" in cmd:
+                return MagicMock(returncode=0, stdout="%5\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_lib.subprocess, "run", _run)
+        assert tmux_lib.resolve_target("green") == ("tmux-mcp", "%5")
+
+    def test_falls_back_to_session_name_when_unset(self, monkeypatch):
+        monkeypatch.setattr(tmux_lib, "resolve_socket", lambda *_: "tmux-mcp")
+        monkeypatch.setattr(
+            tmux_lib.subprocess,
+            "run",
+            lambda *a, **k: MagicMock(returncode=0, stdout="", stderr=""),
+        )
+        assert tmux_lib.resolve_target("green") == ("tmux-mcp", "green")
+
+
+class TestPaneTargeting:
+    """All interaction functions must target the resolved pane, not the session."""
+
+    def test_send_to_terminal_targets_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+        monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", lambda *a, **k: "buf-1")
+
+        assert tmux_lib.send_to_terminal("green", "ls") is True
+
+        paste = [c for c in mock_run.call_args_list if "paste-buffer" in c.args[0]]
+        assert paste, mock_run.call_args_list
+        assert "%7" in paste[0].args[0]
+        assert "green" not in paste[0].args[0]
+
+    def test_send_interrupt_targets_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+
+        tmux_lib.send_interrupt("green")
+
+        sent = mock_run.call_args_list[-1].args[0]
+        assert "%7" in sent
+        assert "C-c" in sent
+
+    def test_execute_in_terminal_sends_to_resolved_pane(self, monkeypatch):
+        mock_run = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="", stderr="")
+        )
+        monkeypatch.setattr(tmux_lib.subprocess, "run", mock_run)
+        monkeypatch.setattr(tmux_lib, "resolve_target", lambda *_: ("tmux-mcp", "%7"))
+        monkeypatch.setattr(tmux_lib, "wait_for_command_completion", lambda *a, **k: None)
+
+        tmux_lib.execute_in_terminal("green", "ls", sync=False)
+
+        send = [c for c in mock_run.call_args_list if "send-keys" in c.args[0]]
+        assert send, mock_run.call_args_list
+        assert "%7" in send[0].args[0]
+
+
 class TestSendToTerminal:
     """Tests for the send_to_terminal function."""
 
@@ -557,8 +693,8 @@ class TestSendToTerminal:
         monkeypatch.setattr(tmux_lib.subprocess, "run", self.mock_run)
         monkeypatch.setattr(tmux_lib, "_verify_terminal_prompt", self.mock_verify)
         monkeypatch.setattr(tmux_lib, "_generate_random_buffer_name", self.mock_gen_name)
-        # send_to_terminal resolves the socket via resolve_socket();
-        # pin it so the call doesn't depend on real tmux state.
+        # send_to_terminal resolves the socket; pin it so the test
+        # doesn't depend on real tmux state.
         monkeypatch.setattr(
             tmux_lib, "resolve_socket", lambda name: "tmux-mcp"
         )

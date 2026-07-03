@@ -1,6 +1,7 @@
 # tmux_lib.py
 
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -26,6 +27,13 @@ INTERACTIVE_DETECTION_DELAY = 1.0
 # The popup needs server-global key rebinds (WheelUpPane) that would
 # otherwise leak into non-experimental sessions on the same server.
 SCROLL_POPUP_SUFFIX = "-experimental-scroll"
+
+# Session option holding the stable pane_id (e.g. "%5") that MCP tools must
+# drive. Saved at creation time so MCP keeps targeting the original shell pane
+# even after the user splits, moves, or re-lays-out the window.
+TARGET_PANE_OPTION = "@tmux_mcp_target_pane"
+
+DEFAULT_AGENT = "claude"
 
 
 def default_socket() -> str:
@@ -88,6 +96,23 @@ def resolve_socket(session_name: str) -> str:
     raise SessionNotFoundError(session_name)
 
 
+def resolve_target(session_name: str) -> tuple[str, str]:
+    """Return (socket, target) for MCP interaction with `session_name`.
+
+    target is the saved shell pane_id when @tmux_mcp_target_pane is set,
+    otherwise the session name itself (back-compat for sessions created
+    before pane-id targeting existed).
+    """
+    socket = resolve_socket(session_name)
+    result = subprocess.run(
+        ["tmux", "-L", socket, "show-option", "-t", session_name,
+         "-qv", TARGET_PANE_OPTION],
+        capture_output=True, text=True,
+    )
+    pane_id = result.stdout.strip() if result.returncode == 0 else ""
+    return socket, (pane_id or session_name)
+
+
 def is_valid_color(name: str) -> bool:
     """Check if a name is a valid color.
 
@@ -133,26 +158,13 @@ def _repo_script_path(script_name: str) -> str:
     return str((Path(__file__).resolve().parent / "scripts" / script_name))
 
 
-# Perl filter stripping control sequences from the popup log so less -R
-# only sees SGR colour codes and printable text. Mirrors the body of
-# tmux-scroll-viewer's bin/log-view.sh.
-_SCROLL_POPUP_FILTER = r"""
-s/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)//g;
-s/\x1b[PXk^_][^\x1b]*\x1b\\//g;
-s/\x1b\[[\d;?]*[A-LN-Za-ln-z]//g;
-s/\x1b[^\[\]PXk^_]//g;
-s/\r+\n/\n/g;
-s/[^\n]*\r//g;
-s/\A\n+//;
-"""
-
-
 def _setup_scroll_popup(socket: str, session_name: str) -> None:
-    """Install the wheel-up scroll-popup hooks/keybind on `socket`.
+    """Install the wheel-up scroll-popup keybind on `socket`.
 
-    Mouse-wheel-up opens a display-popup viewer of the piped pane log
-    (via less -R) instead of entering copy-mode. The WheelUpPane bind
-    is server-global, so this must run on the experimental-scroll
+    Mouse-wheel-up opens a display-popup viewer of the pane's full
+    scrollback (captured live via `tmux capture-pane -e`, then piped
+    into `less -R`) instead of entering copy-mode. The WheelUpPane
+    bind is server-global, so this must run on the experimental-scroll
     socket only.
     """
     # Marker for the popup bind to gate on.
@@ -162,60 +174,24 @@ def _setup_scroll_popup(socket: str, session_name: str) -> None:
         capture_output=True, text=True,
     )
 
-    # Stash the perl filter on tmux env so the popup bind can read it
-    # via $ENV{TMUX_MCP_FILTER} (avoids nested shell-quoting).
-    subprocess.run(
-        ["tmux", "-L", socket, "set-environment", "-t", session_name,
-         "TMUX_MCP_FILTER", _SCROLL_POPUP_FILTER],
-        capture_output=True, text=True,
-    )
-
-    # Mirror each new pane's raw output to /tmp/tmux-pane-<session>-<id>.log.
-    pipe_cmd = (
-        'pipe-pane -o '
-        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
-    )
-    for hook in ("after-new-window", "after-split-window"):
-        subprocess.run(
-            ["tmux", "-L", socket, "set-hook", "-t", session_name,
-             hook, pipe_cmd],
-            capture_output=True, text=True,
-        )
-
-    cleanup_cmd = (
-        'run-shell '
-        '"rm -f /tmp/tmux-pane-#{hook_session_name}-#{hook_pane}.log"'
-    )
-    for hook in ("pane-exited", "pane-died"):
-        subprocess.run(
-            ["tmux", "-L", socket, "set-hook", "-t", session_name,
-             hook, cleanup_cmd],
-            capture_output=True, text=True,
-        )
-
-    # Start the pipe for the initial pane (guarded so re-running setup is a no-op;
-    # `pipe-pane -o` toggles if a pipe is already open).
-    guarded_pipe = (
-        f'pipe-pane -t {session_name} '
-        '"cat > /tmp/tmux-pane-#{session_name}-#{pane_id}.log"'
-    )
-    subprocess.run(
-        ["tmux", "-L", socket, "if-shell", "-F", "-t", session_name,
-         "#{?pane_pipe,0,1}", guarded_pipe],
-        capture_output=True, text=True,
-    )
-
     subprocess.run(
         ["tmux", "-L", socket, "unbind-key", "-T", "root", "WheelUpPane"],
         capture_output=True, text=True,
     )
 
-    # Bind popup action to mouse-wheel up.
+    # capture-pane -e keeps SGR colour escapes and drops everything else,
+    # so less -R sees clean text. -J unwraps tmux's visual line-wrapping,
+    # -S - asks for the full scrollback. #{pane_id} is the pane that
+    # received the wheel event, expanded by tmux before the shell runs.
+    # -B drops the popup border/frame; -w/-h/-x/-y size and place the popup
+    # to overlay exactly the pane that was scrolled (matters in a split
+    # layout, e.g. when an agent occupies the other pane).
     popup_cmd = (
-        'tmux display-popup -E -w 90% -h 90% '
-        '"perl -0777 -pe \\"eval \\\\\\$ENV{TMUX_MCP_FILTER}\\" '
-        '< /tmp/tmux-pane-#{session_name}-#{pane_id}.log '
-        '| less --mouse -R -f -X -e +G" || true'
+        'tmux display-popup -E -B '
+        '-w #{pane_width} -h #{pane_height} '
+        '-x #{pane_left} -y #{pane_top} '
+        '"tmux capture-pane -e -p -J -S - -t #{pane_id} '
+        '| less --mouse -R -f -X -e -M +G" || true'
     )
     popup_action = f"run-shell -b '{popup_cmd}'"
     passthrough_cond = (
@@ -231,10 +207,22 @@ def _setup_scroll_popup(socket: str, session_name: str) -> None:
     )
 
 
+def _agent_terminal_context(session_name: str) -> str:
+    """System-prompt context telling the agent which terminal it controls."""
+    return (
+        f"You share this tmux session with a human via the tmux-mcp server. "
+        f"The terminal you run commands in (via the tmux MCP tools) is named "
+        f"'{session_name}'. Always pass session_name='{session_name}' to those "
+        f"tools so your commands go to the correct terminal."
+    )
+
+
 def create_tmux_session(
     session_name: str,
     color: str | None = None,
     scroll_popup: bool = False,
+    with_claude: bool = False,
+    agent: str = DEFAULT_AGENT,
     return_socket: bool = False,
 ) -> bool | str:
     """
@@ -359,6 +347,32 @@ def create_tmux_session(
     if scroll_popup:
         _setup_scroll_popup(socket, session_name)
 
+    # Save the shell pane_id so MCP tools always drive this pane, even after
+    # the user splits/moves the window later (see resolve_target).
+    pane_result = subprocess.run(
+        ["tmux", "-L", socket, "display-message", "-p", "-t", session_name,
+         "#{pane_id}"],
+        capture_output=True, text=True,
+    )
+    shell_pane = pane_result.stdout.strip()
+    if shell_pane:
+        subprocess.run(
+            ["tmux", "-L", socket, "set-option", "-t", session_name,
+             TARGET_PANE_OPTION, shell_pane],
+            capture_output=True, text=True,
+        )
+
+    if with_claude:
+        # Split side-by-side from the shell pane: shell stays left, agent
+        # opens right and becomes the active pane (tmux default).
+        agent_context = _agent_terminal_context(session_name)
+        agent_cmd = f"{agent} --append-system-prompt {shlex.quote(agent_context)}"
+        subprocess.run(
+            ["tmux", "-L", socket, "split-window", "-h",
+             "-t", shell_pane or session_name, agent_cmd],
+            capture_output=True, text=True,
+        )
+
     return socket if return_socket else True
 
 
@@ -409,8 +423,8 @@ def get_n_last_lines(session_name: str, lines: int = 10) -> str:
     Returns:
         The last N lines as a string
     """
-    socket = resolve_socket(session_name)
-    content = _capture_pane(socket, session_name)
+    socket, target = resolve_target(session_name)
+    content = _capture_pane(socket, target)
     content_lines = content.split("\n")
 
     # Strip control characters from each line
@@ -478,11 +492,11 @@ def send_to_terminal(
     Returns:
         True if command was sent, False if prompt verification failed
     """
-    socket = resolve_socket(session_name)
+    socket, target = resolve_target(session_name)
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
             socket=socket,
-            session_name=session_name,
+            session_name=target,
             verify_string=prompt_verify_string,
         ):
             return False
@@ -495,7 +509,7 @@ def send_to_terminal(
         )
         subprocess.run(
             ["tmux", "-L", socket, "paste-buffer", "-p", "-b", buffer_name,
-             "-t", session_name],
+             "-t", target],
             capture_output=True, text=True
         )
     finally:
@@ -509,9 +523,9 @@ def send_to_terminal(
 
 def send_interrupt(session_name: str) -> None:
     """Send CTRL+C interrupt to the terminal."""
-    socket = resolve_socket(session_name)
+    socket, target = resolve_target(session_name)
     subprocess.run(
-        ["tmux", "-L", socket, "send-keys", "-t", session_name, "C-c"],
+        ["tmux", "-L", socket, "send-keys", "-t", target, "C-c"],
         capture_output=True, text=True
     )
 
@@ -529,9 +543,9 @@ def wait_for_command_completion(
         CommandOutput with status "free" if completed, "interactive" if
         interactive program detected, or None if timeout
     """
-    socket = resolve_socket(session_name)
+    socket, target = resolve_target(session_name)
     return _wait_for_command_completion_on(
-        socket, session_name, timeout, poll_interval
+        socket, target, timeout, poll_interval
     )
 
 
@@ -610,11 +624,11 @@ def execute_in_terminal(
         If sync=True: CommandOutput with output and status, or None if timeout
         If sync=False: Empty string on success, None if verification failed
     """
-    socket = resolve_socket(session_name)
+    socket, target = resolve_target(session_name)
     if prompt_verify_string is not None:
         if not _verify_terminal_prompt(
             socket=socket,
-            session_name=session_name,
+            session_name=target,
             verify_string=prompt_verify_string,
         ):
             raise PromptVerificationError(
@@ -622,7 +636,7 @@ def execute_in_terminal(
             )
 
     subprocess.run(
-        ["tmux", "-L", socket, "send-keys", "-t", session_name,
+        ["tmux", "-L", socket, "send-keys", "-t", target,
          command + "\n"],
         capture_output=True,
         text=True,
@@ -631,14 +645,14 @@ def execute_in_terminal(
         return ""
 
     return _wait_for_command_completion_on(
-        socket, session_name, timeout, poll_interval
+        socket, target, timeout, poll_interval
     )
 
 
 def get_last_command(session_name: str) -> CommandOutput | None:
     """Extract the last command and its output from the named session."""
-    socket = resolve_socket(session_name)
-    return _get_last_command_on(socket, session_name)
+    socket, target = resolve_target(session_name)
+    return _get_last_command_on(socket, target)
 
 
 def _get_last_command_on(

@@ -2,12 +2,15 @@
 
 import argparse
 import inspect
+import json
 import subprocess
 import shutil
 import sys
 
 import datetime
 import os
+from pathlib import Path
+import config
 import tmux_lib
 
 
@@ -22,13 +25,46 @@ TESTABLE_FUNCTIONS = [
     "get_last_command",
 ]
 
+# Agent launched by a bare `--with-agent` (or config `withAgent: true`).
+WITH_AGENT_DEFAULT = "claude"
+
+
+def _resolve_flag(cli_value, config_value):
+    """Return cli_value if explicitly set, else config_value, else False."""
+    if cli_value is not None:
+        return cli_value
+    if config_value is not None:
+        return config_value
+    return False
+
+
+def _resolve_agent(cli_value, config_value):
+    """Resolve the split-pane agent. Returns (with_agent, agent_name).
+
+    cli_value / config_value may be:
+      None        -> not requested
+      True        -> default agent (claude)
+      "<name>"    -> launch that agent command
+    The CLI value takes precedence over the config value.
+    """
+    value = cli_value if cli_value is not None else config_value
+    if value is None or value is False:
+        return False, WITH_AGENT_DEFAULT
+    if value is True:
+        return True, WITH_AGENT_DEFAULT
+    return True, value
+
 
 def cmd_new(args):
     """Create a new tmux session and attach to it."""
-    # Check if session name is a valid color
     color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
 
-    if args.record:
+    cfg = config.session_defaults()
+    record = _resolve_flag(args.record, cfg.get("record"))
+    scroll_popup = _resolve_flag(args.experimental_scroll_popup, cfg.get("experimental_scroll_popup"))
+    with_claude, agent = _resolve_agent(args.with_agent, cfg.get("with_agent"))
+
+    if record:
         if shutil.which("asciinema") is None:
             print(
                     "Error: asciinema is not installed. Please install it to use the --record option. See https://docs.asciinema.org/getting-started for instructions.",
@@ -40,7 +76,9 @@ def cmd_new(args):
         socket = tmux_lib.create_tmux_session(
             args.session_name,
             color=color,
-            scroll_popup=args.experimental_scroll_popup,
+            scroll_popup=scroll_popup,
+            with_claude=with_claude,
+            agent=agent,
             return_socket=True,
         )
     except tmux_lib.SessionNameConflictError as exc:
@@ -52,8 +90,7 @@ def cmd_new(args):
             print(f"Tmux session ready with {color} status bar: {args.session_name}")
         else:
             print(f"Tmux session ready: {args.session_name}")
-        # Attach to the session
-        if args.record:
+        if record:
             recordings_dir = os.path.expanduser("~/.tmux-session-recordings")
             os.makedirs(recordings_dir, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -122,6 +159,109 @@ def cmd_test(args):
         print(result)
 
 
+MCP_SERVER_COMMAND = "tmux-mcp-server"
+
+
+def _prompt_yes(question: str) -> bool:
+    answer = input(f"  {question} [Y/n] ").strip().lower()
+    return answer in ("", "y", "yes")
+
+
+def _configure_claude_code() -> bool:
+    result = subprocess.run(
+        ["claude", "mcp", "add", "--scope", "user", "tmux", MCP_SERVER_COMMAND],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  Error: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_opencode(config_path: Path) -> bool:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  Error reading config: {exc}", file=sys.stderr)
+        return False
+
+    data.setdefault("mcp", {})["tmux"] = {
+        "type": "local",
+        "command": [MCP_SERVER_COMMAND],
+        "enabled": True,
+    }
+
+    try:
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error writing config: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_pi(config_path: Path) -> bool:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  Error reading config: {exc}", file=sys.stderr)
+        return False
+
+    data.setdefault("mcpServers", {})["tmux"] = {
+        "command": MCP_SERVER_COMMAND,
+        "args": [],
+    }
+
+    try:
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error writing config: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def cmd_setup_agents(args):
+    """Detect installed agents and configure tmux-mcp for each."""
+    found_any = False
+    configured = 0
+
+    if shutil.which("claude"):
+        found_any = True
+        print("Found: Claude Code")
+        if _prompt_yes("Configure tmux-mcp for Claude Code?"):
+            if _configure_claude_code():
+                print("  Configured.")
+                configured += 1
+
+    opencode_config = Path.home() / ".config" / "opencode" / "opencode.json"
+    if opencode_config.exists():
+        found_any = True
+        print("Found: OpenCode")
+        if _prompt_yes("Configure tmux-mcp for OpenCode?"):
+            if _configure_opencode(opencode_config):
+                print("  Configured.")
+                configured += 1
+
+    pi_config = Path.home() / ".pi" / "agent" / "mcp.json"
+    if pi_config.exists():
+        found_any = True
+        print("Found: Pi Agent")
+        if _prompt_yes("Configure tmux-mcp for Pi Agent?"):
+            if _configure_pi(pi_config):
+                print("  Configured.")
+                configured += 1
+
+    if not found_any:
+        print("No supported agents detected.")
+        print("Manually add tmux-mcp-server to your agent's MCP config.")
+        return
+
+    if configured == 0:
+        print("No agents configured.")
+    else:
+        print(f"\nConfigured {configured} agent(s). Restart your agent to pick up the changes.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tmux session management CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -144,6 +284,20 @@ def main():
             "WheelUpPane key bind gated on @tmux_mcp_managed."
         ),
     )
+    new_parser.add_argument(
+        "--with-agent",
+        nargs="?",
+        const=WITH_AGENT_DEFAULT,
+        default=None,
+        metavar="AGENT",
+        help=(
+            "Split the window side-by-side and launch an agent in the right "
+            "pane, with added context telling it the terminal it controls "
+            "is named after the session. MCP keeps driving the left shell "
+            f"pane. Bare --with-agent launches '{WITH_AGENT_DEFAULT}'; pass "
+            "--with-agent=<cmd> to launch a different agent."
+        ),
+    )
     new_parser.set_defaults(func=cmd_new)
 
     # test subcommand
@@ -155,6 +309,13 @@ def main():
         "args", nargs="*", help="Arguments to pass to the function"
     )
     test_parser.set_defaults(func=cmd_test)
+
+    # setup-agents subcommand
+    setup_parser = subparsers.add_parser(
+        "setup-agents",
+        help="Detect installed agents and configure tmux-mcp for each",
+    )
+    setup_parser.set_defaults(func=cmd_setup_agents)
 
     args = parser.parse_args()
     args.func(args)

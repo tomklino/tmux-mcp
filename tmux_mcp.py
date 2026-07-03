@@ -161,5 +161,9 @@ def get_last_command_output(session_name: str) -> dict:
     return {"prompt": result.prompt, "command": result.command, "output": result.output}
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
