@@ -205,7 +205,7 @@ def test_create_tmux_session_registers_permissions(monkeypatch, tmp_path):
         lambda *a, **k: MagicMock(returncode=0, stderr=""),
     )
 
-    called = {"session": None}
+    called: dict[str, str | None] = {"session": None}
 
     def _ensure(name: str) -> None:
         called["session"] = name
@@ -586,7 +586,7 @@ class TestCreateSessionTargetPaneAndClaude:
         monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
         monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
 
-        assert tmux_lib.create_tmux_session("green", with_claude=True) is True
+        assert tmux_lib.create_tmux_session("green", with_agent=True) is True
 
         split = [c for c in calls if "split-window" in c]
         assert split, calls
@@ -603,7 +603,7 @@ class TestCreateSessionTargetPaneAndClaude:
         monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
         monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
 
-        tmux_lib.create_tmux_session("green", with_claude=True, agent="myagent")
+        tmux_lib.create_tmux_session("green", with_agent=True, agent="myagent")
 
         split = [c for c in calls if "split-window" in c]
         assert split, calls

@@ -34,10 +34,11 @@ class TestTmuxCli(unittest.TestCase):
 
         mock_create_tmux_session.assert_called_once_with(
             'test_session', color=None, scroll_popup=False,
-            with_claude=False, agent='claude', return_socket=True,
+            with_agent=False, agent='claude', return_socket=True,
         )
         mock_subprocess_run.assert_called_once_with(
-            ['tmux', '-L', 'tmux-mcp', 'attach-session', '-t', 'test_session']
+            ['tmux', '-L', 'tmux-mcp', 'attach-session', '-t', 'test_session'],
+            check=False,
         )
         mock_print.assert_called_with('Tmux session ready: test_session')
 
@@ -60,10 +61,11 @@ class TestTmuxCli(unittest.TestCase):
 
         mock_create_tmux_session.assert_called_once_with(
             'exp_session', color=None, scroll_popup=True,
-            with_claude=False, agent='claude', return_socket=True,
+            with_agent=False, agent='claude', return_socket=True,
         )
         mock_subprocess_run.assert_called_once_with(
-            ['tmux', '-L', 'tmux-mcp-experimental-scroll', 'attach-session', '-t', 'exp_session']
+            ['tmux', '-L', 'tmux-mcp-experimental-scroll', 'attach-session', '-t', 'exp_session'],
+            check=False,
         )
 
     @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
@@ -133,7 +135,7 @@ class TestTmuxCli(unittest.TestCase):
         mock_os_makedirs.assert_called_once_with('/home/user/.tmux-session-recordings', exist_ok=True)
         mock_create_tmux_session.assert_called_once_with(
             'test_recorded_session', color=None, scroll_popup=False,
-            with_claude=False, agent='claude', return_socket=True,
+            with_agent=False, agent='claude', return_socket=True,
         )
 
         expected_filename = '/home/user/.tmux-session-recordings/test_recorded_session_2026-05-03_10-30-00.cast'
@@ -183,7 +185,7 @@ class TestTmuxCli(unittest.TestCase):
     @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
     def test_cmd_new_with_agent_bare_flag_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = True
+        mock_create_tmux_session.return_value = 'tmux-mcp'
 
         args = mock.Mock()
         args.session_name = 'green'
@@ -198,7 +200,7 @@ class TestTmuxCli(unittest.TestCase):
             'green',
             color='green',
             scroll_popup=False,
-            with_claude=True,
+            with_agent=True,
             agent='claude',
             return_socket=True,
         )
@@ -207,7 +209,7 @@ class TestTmuxCli(unittest.TestCase):
     @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
     def test_cmd_new_with_agent_custom_value(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = True
+        mock_create_tmux_session.return_value = 'tmux-mcp'
 
         args = mock.Mock()
         args.session_name = 'green'
@@ -222,7 +224,7 @@ class TestTmuxCli(unittest.TestCase):
             'green',
             color='green',
             scroll_popup=False,
-            with_claude=True,
+            with_agent=True,
             agent='pi',
             return_socket=True,
         )
@@ -231,7 +233,7 @@ class TestTmuxCli(unittest.TestCase):
     @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
     def test_cmd_new_with_agent_defaults_from_config(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = True
+        mock_create_tmux_session.return_value = 'tmux-mcp'
 
         args = mock.Mock()
         args.session_name = 'green'
@@ -246,7 +248,7 @@ class TestTmuxCli(unittest.TestCase):
             'green',
             color='green',
             scroll_popup=False,
-            with_claude=True,
+            with_agent=True,
             agent='pi',
             return_socket=True,
         )
@@ -255,7 +257,7 @@ class TestTmuxCli(unittest.TestCase):
     @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
     def test_cmd_new_with_agent_config_true_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = True
+        mock_create_tmux_session.return_value = 'tmux-mcp'
 
         args = mock.Mock()
         args.session_name = 'green'
@@ -270,7 +272,7 @@ class TestTmuxCli(unittest.TestCase):
             'green',
             color='green',
             scroll_popup=False,
-            with_claude=True,
+            with_agent=True,
             agent='claude',
             return_socket=True,
         )

@@ -223,11 +223,36 @@ def _agent_terminal_context(session_name: str) -> str:
     )
 
 
+from typing import overload, Literal
+
+
+@overload
 def create_tmux_session(
     session_name: str,
     color: str | None = None,
     scroll_popup: bool = False,
-    with_claude: bool = False,
+    with_agent: bool = False,
+    agent: str = DEFAULT_AGENT,
+    return_socket: Literal[True] = True,
+) -> str: ...
+
+
+@overload
+def create_tmux_session(
+    session_name: str,
+    color: str | None = None,
+    scroll_popup: bool = False,
+    with_agent: bool = False,
+    agent: str = DEFAULT_AGENT,
+    return_socket: Literal[False] = False,
+) -> bool: ...
+
+
+def create_tmux_session(
+    session_name: str,
+    color: str | None = None,
+    scroll_popup: bool = False,
+    with_agent: bool = False,
     agent: str = DEFAULT_AGENT,
     return_socket: bool = False,
 ) -> bool | str:
@@ -375,7 +400,7 @@ def create_tmux_session(
             capture_output=True, text=True,
         )
 
-    if with_claude:
+    if with_agent:
         # Split side-by-side from the shell pane: shell stays left, agent
         # opens right and becomes the active pane (tmux default).
         agent_context = _agent_terminal_context(session_name)

@@ -62,7 +62,34 @@ def cmd_new(args):
     cfg = config.session_defaults()
     record = _resolve_flag(args.record, cfg.get("record"))
     scroll_popup = _resolve_flag(args.experimental_scroll_popup, cfg.get("experimental_scroll_popup"))
-    with_claude, agent = _resolve_agent(args.with_agent, cfg.get("with_agent"))
+    with_agent, agent = _resolve_agent(args.with_agent, cfg.get("with_agent"))
+
+    # First-time UX: if user asked for Pi agent, offer to set up Pi MCP.
+    if (
+        with_agent
+        and agent == "pi"
+        and sys.stdin.isatty()
+        and config.should_prompt_setup_pi_mcp()
+    ):
+        print("\nPi MCP setup detected (first time using --with-agent pi).")
+        want = _prompt_yes(
+            "Would you like tmux-cli to configure ~/.pi/agent/mcp.json for tmux-mcp and ensure pi-mcp-adapter is installed?"
+        )
+        # Flip the flag regardless of answer.
+        try:
+            config.set_prompt_setup_pi_mcp(False)
+        except Exception:
+            # Don't block session creation if config write fails.
+            pass
+
+        if want:
+            if _ensure_pi_mcp_adapter_installed():
+                _configure_pi_mcp()
+            else:
+                print(
+                    f"  Skipping Pi MCP config because {PI_MCP_ADAPTER_PKG} could not be installed.",
+                    file=sys.stderr,
+                )
 
     if record:
         if shutil.which("asciinema") is None:
@@ -77,7 +104,7 @@ def cmd_new(args):
             args.session_name,
             color=color,
             scroll_popup=scroll_popup,
-            with_claude=with_claude,
+            with_agent=with_agent,
             agent=agent,
             return_socket=True,
         )
@@ -106,10 +133,15 @@ def cmd_new(args):
                 ]
             )
         else:
-            subprocess.run([
-                "tmux", "-L", socket,
-                "attach-session", "-t", args.session_name,
-            ])
+            attach_cmd: list[str] = [
+                "tmux",
+                "-L",
+                socket,
+                "attach-session",
+                "-t",
+                args.session_name,
+            ]
+            subprocess.run(attach_cmd, check=False)
     else:
         print(f"Failed to create tmux session: {args.session_name}", file=sys.stderr)
         sys.exit(1)
@@ -160,6 +192,82 @@ def cmd_test(args):
 
 
 MCP_SERVER_COMMAND = "tmux-mcp-server"
+PI_MCP_ADAPTER_PKG = "pi-mcp-adapter"
+PI_MCP_ADAPTER_INSTALL_SPEC = "npm:pi-mcp-adapter"
+
+
+def _ensure_pi_mcp_adapter_installed() -> bool:
+    """Ensure pi-mcp-adapter is installed in the current environment.
+
+    Returns True if installed (or successfully installed), else False.
+    """
+    # Fast-path: if import works, we're good.
+    try:  # pragma: no cover
+        __import__("pi_mcp_adapter")
+        return True
+    except Exception:
+        pass
+
+    pi = shutil.which("pi")
+    if not pi:
+        print("  Error installing pi-mcp-adapter: `pi` command not found.", file=sys.stderr)
+        return False
+
+    print(
+        f"  {PI_MCP_ADAPTER_PKG} not found; attempting to install it via `pi install {PI_MCP_ADAPTER_INSTALL_SPEC}`..."
+    )
+    result = subprocess.run(
+        [pi, "install", PI_MCP_ADAPTER_INSTALL_SPEC],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout).strip()
+        print(f"  Error installing {PI_MCP_ADAPTER_PKG}: {err}", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_pi_mcp(pi_config: Path | None = None) -> bool:
+    """Write Pi MCP config for tmux-mcp.
+
+    Writes ~/.pi/agent/mcp.json to run tmux-mcp using the current interpreter.
+
+    pi_config: override path for testing.
+    """
+    pi_config = pi_config or (Path.home() / ".pi" / "agent" / "mcp.json")
+    pi_config.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use bash -lc to use allow using the installed python interperter from the
+    # tmux-mcp installation venv without using a specific username in the config.
+    python = sys.executable
+    args = [
+        "-lc",
+        f"exec \"{python}\" -m tmux_mcp.tmux_mcp",
+    ]
+
+    try:
+        data = json.loads(pi_config.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  Error reading {pi_config}: {exc}", file=sys.stderr)
+        return False
+
+    data.setdefault("mcpServers", {})["tmux"] = {
+        "command": "bash",
+        "args": args,
+    }
+
+    try:
+        pi_config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error writing {pi_config}: {exc}", file=sys.stderr)
+        return False
+
+    print(f"  Wrote {pi_config}")
+    print("  Reload Pi to pick up the new MCP config.")
+    return True
 
 
 def _prompt_yes(question: str) -> bool:

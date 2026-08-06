@@ -26,6 +26,10 @@ _CONFIG_TEMPLATE = """\
 # Default tmux socket name used by tmux-cli and the MCP server.
 # Can be overridden at runtime with the TMUX_MCP_SOCKET environment variable.
 # defaultSocket: tmux-mcp
+
+# One-time prompts / UX flags.
+# When true/missing, tmux-cli may ask to configure Pi MCP on first use of --with-agent pi.
+# promptSetupPiMcp: true
 """
 
 
@@ -94,3 +98,34 @@ def session_defaults() -> dict:
         result["with_agent"] = None
 
     return result
+
+
+def should_prompt_setup_pi_mcp() -> bool:
+    """Whether tmux-cli should prompt to set up Pi MCP integration.
+
+    Stored in the YAML config as `promptSetupPiMcp`.
+    Defaults to True if the key is missing.
+    """
+    try:
+        data = yaml.safe_load(config_file_path().read_text(encoding="utf-8")) or {}
+    except (FileNotFoundError, yaml.YAMLError, OSError):
+        return True
+
+    val = data.get("promptSetupPiMcp", True)
+    return bool(val) if isinstance(val, bool) else True
+
+
+def set_prompt_setup_pi_mcp(value: bool) -> None:
+    """Persist `promptSetupPiMcp` in the YAML config."""
+    path = config_file_path()
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+    except (yaml.YAMLError, OSError):
+        data = {}
+
+    data["promptSetupPiMcp"] = bool(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
