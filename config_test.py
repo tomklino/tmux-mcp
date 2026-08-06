@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-import config
+from tmux_mcp import config
 
 
 def test_default_socket_env_var_takes_precedence(monkeypatch, tmp_path):

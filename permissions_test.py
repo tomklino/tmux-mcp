@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import tmux_mcp
+from tmux_mcp import tmux_mcp
 
 
 def _write_permissions(path: Path, data: dict) -> None:

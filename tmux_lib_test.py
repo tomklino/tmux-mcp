@@ -2,8 +2,8 @@
 """Unit tests for _detect_interactive_mode in tmux_lib.py"""
 
 import pytest
-import tmux_lib
-import permissions
+from tmux_mcp import tmux_lib
+from tmux_mcp import permissions
 from unittest.mock import MagicMock, call
 
 
@@ -240,7 +240,8 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
     assert any(j.startswith(f"{socket_prefix} set-option -t green status on") for j in joined), joined
     assert any(j.startswith(f"{socket_prefix} set-option -t green status-interval 5") for j in joined), joined
     assert any(
-        f"{socket_prefix} set-option -t green status-right" in j and "tmux_mcp_status.py" in j
+        f"{socket_prefix} set-option -t green status-right" in j
+        and "-m tmux_mcp.scripts.tmux_mcp_status" in j
         for j in joined
     ), joined
 
@@ -248,7 +249,7 @@ def test_create_tmux_session_sets_minimal_status_right_and_keybinding(monkeypatc
     assert any(
         j.startswith(f"{socket_prefix} bind-key -n C-] run-shell")
         and "@tmux_mcp_managed" in j
-        and "tmux_mcp_toggle.py" in j
+        and "-m tmux_mcp.scripts.tmux_mcp_toggle" in j
         for j in joined
     ), joined
 

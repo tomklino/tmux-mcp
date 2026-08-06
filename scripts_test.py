@@ -22,7 +22,7 @@ def test_toggle_missing_file_creates_file_and_registers_session_as_deny(tmp_path
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", env=env)
 
@@ -40,7 +40,7 @@ def test_toggle_mode_explicitly_sets_mode(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", "--mode", "read_send", env=env)
 
@@ -62,7 +62,7 @@ def test_status_unlisted_session_shows_deny(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_status.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_status.py"
 
     result = _run(script, "--session", "green", env=env)
 
@@ -87,7 +87,7 @@ def test_toggle_cycles_deny_to_read(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", env=env)
     assert result.returncode == 0
@@ -113,7 +113,7 @@ def test_toggle_cycles_read_to_read_send(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", env=env)
     assert result.returncode == 0
@@ -139,7 +139,7 @@ def test_toggle_cycles_read_send_to_execute(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", env=env)
     assert result.returncode == 0
@@ -165,7 +165,7 @@ def test_toggle_cycles_execute_to_deny(tmp_path: Path):
     env = os.environ.copy()
     env["TMUX_MCP_PERMISSIONS_FILE"] = str(permissions_file)
 
-    script = Path(__file__).parent / "scripts" / "tmux_mcp_toggle.py"
+    script = Path(__file__).parent / "tmux_mcp" / "scripts" / "tmux_mcp_toggle.py"
 
     result = _run(script, "--session", "green", env=env)
     assert result.returncode == 0

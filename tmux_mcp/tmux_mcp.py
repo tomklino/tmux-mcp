@@ -6,9 +6,9 @@ Provides tools to read terminal output and execute commands in tmux sessions.
 
 from mcp.server.fastmcp import FastMCP
 
-import tmux_lib
+from tmux_mcp import tmux_lib
 
-import permissions
+from tmux_mcp import permissions
 
 mcp = FastMCP("tmux")
 

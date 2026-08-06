@@ -10,8 +10,8 @@ import sys
 import datetime
 import os
 from pathlib import Path
-import config
-import tmux_lib
+from tmux_mcp import config
+from tmux_mcp import tmux_lib
 
 
 # Alias for testing

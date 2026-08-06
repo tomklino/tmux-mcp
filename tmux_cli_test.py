@@ -7,10 +7,13 @@ import subprocess
 from io import StringIO
 
 # Add the parent directory to the sys.path to allow importing tmux_cli
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+# Compatibility: keep legacy top-level module names for tests/mocks.
+import tmux_mcp.tmux_cli as tmux_cli
+import tmux_mcp.tmux_lib as tmux_lib
 
-import tmux_cli
-import tmux_lib
+# Also alias to old module names so existing mock.patch('tmux_cli...') keeps working.
+sys.modules.setdefault('tmux_cli', tmux_cli)
+sys.modules.setdefault('tmux_lib', tmux_lib)
 
 class TestTmuxCli(unittest.TestCase):
 

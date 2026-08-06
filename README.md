@@ -33,18 +33,58 @@ and finer control over the commands.
 
 ## Installation
 
-1. Clone this repository:
+### On macOS
 
-   ```bash
-   git clone git@github.com:tomklino/tmux-mcp.git
-   cd tmux-mcp
-   ```
+1. Install [tmux][1] if not already installed.
 
-2. Install dependencies (it uses `mcp` library):
+    ```
+    brew install tmux
+    ```
 
-   ```bash
-   pip install mcp
-   ```
+2. Install [pipx][2]
+
+    ```
+    brew install pipx
+    pipx ensurepath
+    ```
+
+3. Install `tmux-mcp` with pipx
+
+    ```
+    pipx install git+https://github.com/tomklino/tmux-mcp.git
+    ```
+
+### On Linux
+
+1. Install [tmux][1] if not already installed.
+2. Install [pipx][2] with your distribution's package manager (`apt`, `rpm`, `snap`)
+
+    ```
+    pipx ensurepath
+    ```
+
+3. Install `tmux-mcp` with pipx
+
+    ```
+    pipx install git+https://github.com/tomklino/tmux-mcp.git
+    ```
+
+### On Windows
+
+1. Install [tmux][1] if not already installed.
+2. Intall [pipx][2]
+
+    ```
+    scoop install pipx
+    pipx ensurepath
+    ```
+
+3. Install `tmux-mcp` with pipx
+
+    ```
+    pipx install git+https://github.com/tomklino/tmux-mcp.git
+    ```
+
 
 ### Client Configuration
 
@@ -196,4 +236,5 @@ it runs.
 
 
 [asciinema]: https://docs.asciinema.org/getting-started
-
+[1]: https://github.com/tmux/tmux/wiki/installing
+[2]: https://pipx.pypa.io/stable/how-to/install-pipx.html

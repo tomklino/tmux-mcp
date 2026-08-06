@@ -9,10 +9,10 @@ import random
 import string
 from typing import NamedTuple
 
-from colors import VALID_COLORS
+from tmux_mcp.colors import VALID_COLORS
 
-import config
-import permissions
+from tmux_mcp import config
+from tmux_mcp import permissions
 
 from pathlib import Path
 
@@ -152,10 +152,16 @@ class PromptVerificationError(Exception):
 TMUX_PS1 = r"·$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
 
 
-def _repo_script_path(script_name: str) -> str:
-    """Return an absolute path to a script shipped with this repo."""
+def _python_module_cmd(module: str, args: list[str]) -> str:
+    """Return a shell command to run a Python module with this interpreter.
 
-    return str((Path(__file__).resolve().parent / "scripts" / script_name))
+    We avoid relying on `#!/usr/bin/env python3` (tmux may have a different PATH)
+    and avoid filesystem-relative script paths (wheels may not ship loose scripts).
+    """
+
+    quoted_py = shlex.quote(sys.executable)
+    quoted_args = " ".join(shlex.quote(a) for a in args)
+    return f"{quoted_py} -m {module}{(' ' + quoted_args) if quoted_args else ''}"
 
 
 def _setup_scroll_popup(socket: str, session_name: str) -> None:
@@ -304,8 +310,15 @@ def create_tmux_session(
     permissions.ensure_session_registered(session_name)
 
     # Apply tmux-mcp UX settings for sessions created via this tool.
-    status_script = _repo_script_path("tmux_mcp_status.py")
-    toggle_script = _repo_script_path("tmux_mcp_toggle.py")
+    # Use `sys.executable -m ...` so tmux runs helpers with the same interpreter
+    # as this installed environment (pipx/venv), not whatever `python3` happens
+    # to be on tmux's PATH.
+    status_cmd = _python_module_cmd(
+        "tmux_mcp.scripts.tmux_mcp_status", ["--session", "#S"]
+    ).replace("#S", "'#S'")
+    toggle_cmd = _python_module_cmd(
+        "tmux_mcp.scripts.tmux_mcp_toggle", ["--session", "#S"]
+    ).replace("#S", "'#S'")
 
     # Mark session as managed by tmux-mcp
     subprocess.run(
@@ -329,7 +342,7 @@ def create_tmux_session(
     )
     subprocess.run(
         ["tmux", "-L", socket, "set-option", "-t", session_name,
-         "status-right", f"#( {status_script} --session '#S' )"],
+         "status-right", f"#( {status_cmd} )"],
         capture_output=True,
         text=True,
     )
@@ -339,7 +352,7 @@ def create_tmux_session(
         ["tmux", "-L", socket, "bind-key", "-n", "C-]", "run-shell",
          f"[ "
          f"\"$(tmux show-option -t '#S' -qv @tmux_mcp_managed)\" = '1' "
-         f"] && {toggle_script} --session '#S' >/dev/null 2>&1; tmux refresh-client -S"],
+         f"] && {toggle_cmd} >/dev/null 2>&1; tmux refresh-client -S"],
         capture_output=True,
         text=True,
     )
