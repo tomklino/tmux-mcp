@@ -181,12 +181,8 @@ class TestTmuxCli(unittest.TestCase):
             mock_stderr.getvalue()
         )
 
-    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
-    @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
-    def test_cmd_new_with_agent_bare_flag_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = 'tmux-mcp'
-
+    def test_cmd_new_with_agent_bare_flag_uses_claude(self, mock_print):
         args = mock.Mock()
         args.session_name = 'green'
         args.record = False
@@ -194,23 +190,18 @@ class TestTmuxCli(unittest.TestCase):
         args.with_agent = tmux_cli.WITH_AGENT_DEFAULT
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
-            tmux_cli.cmd_new(args)
+            with mock.patch('tmux_cli._launch_sandbox', return_value='sandbox-container') as mock_launch_sandbox:
+                tmux_cli.cmd_new(args)
 
-        mock_create_tmux_session.assert_called_once_with(
-            'green',
-            color='green',
-            scroll_popup=False,
-            with_agent=True,
+        mock_launch_sandbox.assert_called_once_with(
+            session_name='green',
             agent='claude',
-            return_socket=True,
+            with_agent=True,
         )
+        mock_print.assert_called_with('Sandbox ready: sandbox-container')
 
-    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
-    @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
-    def test_cmd_new_with_agent_custom_value(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = 'tmux-mcp'
-
+    def test_cmd_new_with_agent_custom_value(self, mock_print):
         args = mock.Mock()
         args.session_name = 'green'
         args.record = False
@@ -218,23 +209,19 @@ class TestTmuxCli(unittest.TestCase):
         args.with_agent = 'pi'
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={}):
-            tmux_cli.cmd_new(args)
+            with mock.patch('tmux_cli._launch_sandbox', return_value='sandbox-container') as mock_launch_sandbox:
+                with mock.patch('tmux_cli.config.should_prompt_setup_pi_mcp', return_value=False):
+                    tmux_cli.cmd_new(args)
 
-        mock_create_tmux_session.assert_called_once_with(
-            'green',
-            color='green',
-            scroll_popup=False,
-            with_agent=True,
+        mock_launch_sandbox.assert_called_once_with(
+            session_name='green',
             agent='pi',
-            return_socket=True,
+            with_agent=True,
         )
+        mock_print.assert_called_with('Sandbox ready: sandbox-container')
 
-    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
-    @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
-    def test_cmd_new_with_agent_defaults_from_config(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = 'tmux-mcp'
-
+    def test_cmd_new_with_agent_defaults_from_config(self, mock_print):
         args = mock.Mock()
         args.session_name = 'green'
         args.record = None
@@ -242,23 +229,19 @@ class TestTmuxCli(unittest.TestCase):
         args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={'with_agent': 'pi'}):
-            tmux_cli.cmd_new(args)
+            with mock.patch('tmux_cli._launch_sandbox', return_value='sandbox-container') as mock_launch_sandbox:
+                with mock.patch('tmux_cli.config.should_prompt_setup_pi_mcp', return_value=False):
+                    tmux_cli.cmd_new(args)
 
-        mock_create_tmux_session.assert_called_once_with(
-            'green',
-            color='green',
-            scroll_popup=False,
-            with_agent=True,
+        mock_launch_sandbox.assert_called_once_with(
+            session_name='green',
             agent='pi',
-            return_socket=True,
+            with_agent=True,
         )
+        mock_print.assert_called_with('Sandbox ready: sandbox-container')
 
-    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
-    @mock.patch('tmux_cli.subprocess.run')
     @mock.patch('tmux_cli.print')
-    def test_cmd_new_with_agent_config_true_uses_claude(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
-        mock_create_tmux_session.return_value = 'tmux-mcp'
-
+    def test_cmd_new_with_agent_config_true_uses_claude(self, mock_print):
         args = mock.Mock()
         args.session_name = 'green'
         args.record = None
@@ -266,16 +249,107 @@ class TestTmuxCli(unittest.TestCase):
         args.with_agent = None
 
         with mock.patch('tmux_cli.config.session_defaults', return_value={'with_agent': True}):
-            tmux_cli.cmd_new(args)
+            with mock.patch('tmux_cli._launch_sandbox', return_value='sandbox-container') as mock_launch_sandbox:
+                tmux_cli.cmd_new(args)
 
-        mock_create_tmux_session.assert_called_once_with(
-            'green',
-            color='green',
-            scroll_popup=False,
-            with_agent=True,
+        mock_launch_sandbox.assert_called_once_with(
+            session_name='green',
             agent='claude',
-            return_socket=True,
+            with_agent=True,
         )
+        mock_print.assert_called_with('Sandbox ready: sandbox-container')
+
+    def test_resolve_sandbox_defaults_true_when_cli_and_config_absent(self):
+        self.assertTrue(tmux_cli._resolve_sandbox(None, None))
+
+    def test_resolve_sandbox_uses_config_when_cli_absent(self):
+        self.assertFalse(tmux_cli._resolve_sandbox(None, False))
+        self.assertTrue(tmux_cli._resolve_sandbox(None, True))
+
+    def test_resolve_sandbox_cli_takes_precedence_over_config(self):
+        self.assertFalse(tmux_cli._resolve_sandbox(False, True))
+        self.assertTrue(tmux_cli._resolve_sandbox(True, False))
+
+    def test_main_parses_sandbox_false(self):
+        with mock.patch.object(sys, 'argv', ['tmux-cli', 'new', 'green', '--sandbox=false']):
+            with mock.patch('tmux_cli.cmd_new') as mock_cmd_new:
+                tmux_cli.main()
+
+        args = mock_cmd_new.call_args.args[0]
+        self.assertEqual(args.session_name, 'green')
+        self.assertFalse(args.sandbox)
+
+    def test_main_parses_sandbox_true(self):
+        with mock.patch.object(sys, 'argv', ['tmux-cli', 'new', 'green', '--sandbox=true']):
+            with mock.patch('tmux_cli.cmd_new') as mock_cmd_new:
+                tmux_cli.main()
+
+        args = mock_cmd_new.call_args.args[0]
+        self.assertEqual(args.session_name, 'green')
+        self.assertTrue(args.sandbox)
+
+    @mock.patch('tmux_cli.tmux_lib.create_tmux_session')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_sandbox_false_preserves_current_flow(self, mock_print, mock_subprocess_run, mock_create_tmux_session):
+        mock_create_tmux_session.return_value = 'tmux-mcp'
+
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = False
+        args.experimental_scroll_popup = False
+        args.with_agent = None
+        args.sandbox = False
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={}):
+            with mock.patch('tmux_cli._launch_sandbox') as mock_launch_sandbox:
+                tmux_cli.cmd_new(args)
+
+        mock_launch_sandbox.assert_not_called()
+        mock_create_tmux_session.assert_called_once()
+        mock_subprocess_run.assert_called_once()
+
+    @mock.patch('tmux_cli.print')
+    def test_cmd_new_sandbox_true_uses_sandbox_launcher(self, mock_print):
+        args = mock.Mock()
+        args.session_name = 'green'
+        args.record = False
+        args.experimental_scroll_popup = False
+        args.with_agent = 'claude'
+        args.sandbox = True
+
+        with mock.patch('tmux_cli.config.session_defaults', return_value={}):
+            with mock.patch('tmux_cli._launch_sandbox', return_value='sandbox-container') as mock_launch_sandbox:
+                tmux_cli.cmd_new(args)
+
+        mock_launch_sandbox.assert_called_once_with(
+            session_name='green',
+            agent='claude',
+            with_agent=True,
+        )
+        mock_print.assert_called_with('Sandbox ready: sandbox-container')
+
+    @mock.patch('tmux_cli.subprocess.run')
+    def test_launch_sandbox_uses_runtime_commands(self, mock_run):
+        runtime = mock.Mock()
+        runtime.run_container_command.return_value = ['runtime', 'run']
+        runtime.container_name.return_value = 'tmux-mcp-sandbox-green-abc'
+
+        with mock.patch('tmux_cli.default_container_runtime', return_value=runtime):
+            name = tmux_cli._launch_sandbox(
+                session_name='green',
+                agent='pi',
+                with_agent=True,
+            )
+
+        self.assertEqual(name, 'tmux-mcp-sandbox-green-abc')
+        runtime.run_container_command.assert_called_once_with(
+            container_name='tmux-mcp-sandbox-green-abc',
+            session_name='green',
+            agent='pi',
+            prompt_extension=mock.ANY,
+        )
+        mock_run.assert_called_once_with(['runtime', 'run'], check=True)
 
 
 if __name__ == '__main__':

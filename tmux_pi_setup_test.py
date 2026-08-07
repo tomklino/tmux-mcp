@@ -6,12 +6,13 @@ from unittest import mock
 import tmux_mcp.tmux_cli as tmux_cli
 
 
-def _args(session_name="green", with_agent=None, record=False, experimental_scroll_popup=False):
+def _args(session_name="green", with_agent=None, record=False, experimental_scroll_popup=False, sandbox=False):
     args = mock.Mock()
     args.session_name = session_name
     args.record = record
     args.experimental_scroll_popup = experimental_scroll_popup
     args.with_agent = with_agent
+    args.sandbox = sandbox
     return args
 
 

@@ -120,6 +120,7 @@ def test_session_defaults_absent_keys_are_none(monkeypatch, tmp_path):
     assert defaults["record"] is False
     assert defaults["experimental_scroll_popup"] is None
     assert defaults["with_agent"] is None
+    assert defaults["sandbox"] is None
 
 
 def test_session_defaults_missing_file_all_none(monkeypatch, tmp_path):
@@ -127,7 +128,12 @@ def test_session_defaults_missing_file_all_none(monkeypatch, tmp_path):
 
     defaults = config.session_defaults()
 
-    assert defaults == {"record": None, "experimental_scroll_popup": None, "with_agent": None}
+    assert defaults == {
+        "record": None,
+        "experimental_scroll_popup": None,
+        "with_agent": None,
+        "sandbox": None,
+    }
 
 
 def test_session_defaults_invalid_yaml_all_none(monkeypatch, tmp_path):
@@ -137,7 +143,12 @@ def test_session_defaults_invalid_yaml_all_none(monkeypatch, tmp_path):
 
     defaults = config.session_defaults()
 
-    assert defaults == {"record": None, "experimental_scroll_popup": None, "with_agent": None}
+    assert defaults == {
+        "record": None,
+        "experimental_scroll_popup": None,
+        "with_agent": None,
+        "sandbox": None,
+    }
 
 
 def test_session_defaults_non_bool_values_are_none(monkeypatch, tmp_path):
@@ -149,6 +160,7 @@ def test_session_defaults_non_bool_values_are_none(monkeypatch, tmp_path):
 
     assert defaults["record"] is None
     assert defaults["with_agent"] is None
+    assert defaults["sandbox"] is None
 
 
 if __name__ == "__main__":

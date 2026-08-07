@@ -68,13 +68,14 @@ def default_socket() -> str:
 def session_defaults() -> dict:
     """Return per-session flag defaults from the config file.
 
-    Keys: 'record', 'experimental_scroll_popup', 'with_agent'.
+    Keys: 'record', 'experimental_scroll_popup', 'with_agent', 'sandbox'.
     CLI arguments take precedence over these values.
 
     Config YAML keys:
       record                  -> bool
       experimentalScrollPopup -> bool
       withAgent               -> str | bool
+      sandbox                 -> bool
     """
     try:
         data = yaml.safe_load(config_file_path().read_text(encoding="utf-8")) or {}
@@ -85,6 +86,7 @@ def session_defaults() -> dict:
     for dest, yaml_key in [
         ("record", "record"),
         ("experimental_scroll_popup", "experimentalScrollPopup"),
+        ("sandbox", "sandbox"),
     ]:
         val = data.get(yaml_key)
         result[dest] = bool(val) if isinstance(val, bool) else None

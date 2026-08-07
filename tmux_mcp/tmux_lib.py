@@ -284,7 +284,7 @@ def create_tmux_session(
 
     # Create a new detached session, or attach if it already exists
     create_result = subprocess.run(
-        ["tmux", "-L", socket, "new-session", "-Ad", "-s", session_name],
+        ["tmux", "-L", socket, "new-session", "-Ad", "-s", session_name, "zsh"],
         capture_output=True,
         text=True,
     )

@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from tmux_mcp import config
 from tmux_mcp import tmux_lib
+from tmux_mcp import sandbox as sandbox_lib
+from tmux_mcp.container_runtime import default_container_runtime
 
 
 # Alias for testing
@@ -55,6 +57,42 @@ def _resolve_agent(cli_value, config_value):
     return True, value
 
 
+def _resolve_sandbox(cli_value, config_value):
+    """Return CLI sandbox value if set, else config value, else True."""
+    if cli_value is not None:
+        return cli_value
+    if config_value is not None:
+        return config_value
+    return True
+
+
+def _parse_bool_arg(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "y", "on"):
+        return True
+    if normalized in ("0", "false", "no", "n", "off"):
+        return False
+    raise argparse.ArgumentTypeError(
+        f"invalid boolean value: {value!r}; expected true/false"
+    )
+
+
+def _launch_sandbox(session_name: str, agent: str, with_agent: bool) -> str:
+    runtime = default_container_runtime()
+    prompt_extension = sandbox_lib.build_agent_prompt_extension(session_name)
+    container_name = runtime.container_name(session_name)
+    subprocess.run(
+        runtime.run_container_command(
+            container_name=container_name,
+            session_name=session_name,
+            agent=agent,
+            prompt_extension=prompt_extension,
+        ),
+        check=True,
+    )
+    return container_name
+
+
 def cmd_new(args):
     """Create a new tmux session and attach to it."""
     color = args.session_name if tmux_lib.is_valid_color(args.session_name) else None
@@ -63,6 +101,7 @@ def cmd_new(args):
     record = _resolve_flag(args.record, cfg.get("record"))
     scroll_popup = _resolve_flag(args.experimental_scroll_popup, cfg.get("experimental_scroll_popup"))
     with_agent, agent = _resolve_agent(args.with_agent, cfg.get("with_agent"))
+    sandbox = _resolve_sandbox(getattr(args, "sandbox", None), cfg.get("sandbox"))
 
     # First-time UX: if user asked for Pi agent, offer to set up Pi MCP.
     if (
@@ -98,6 +137,15 @@ def cmd_new(args):
                     file=sys.stderr,
                 )
             sys.exit(1)
+
+    if sandbox and with_agent:
+        container_name = _launch_sandbox(
+            session_name=args.session_name,
+            agent=agent,
+            with_agent=with_agent,
+        )
+        print(f"Sandbox ready: {container_name}")
+        return
 
     try:
         socket = tmux_lib.create_tmux_session(
@@ -404,6 +452,16 @@ def main():
             "is named after the session. MCP keeps driving the left shell "
             f"pane. Bare --with-agent launches '{WITH_AGENT_DEFAULT}'; pass "
             "--with-agent=<cmd> to launch a different agent."
+        ),
+    )
+    new_parser.add_argument(
+        "--sandbox",
+        type=_parse_bool_arg,
+        default=None,
+        metavar="BOOL",
+        help=(
+            "Enable or disable sandbox mode. Accepts true/false. "
+            "When omitted, the config value is used; otherwise sandbox defaults to enabled."
         ),
     )
     new_parser.set_defaults(func=cmd_new)

@@ -565,6 +565,9 @@ class TestCreateSessionTargetPaneAndClaude:
 
         assert tmux_lib.create_tmux_session("green") is True
 
+        new_session = [c for c in calls if "new-session" in c][0]
+        assert new_session[-1] == "zsh"
+
         joined = [" ".join(c) for c in calls]
         assert any(
             j.startswith("tmux -L tmux-mcp set-option -t green @tmux_mcp_target_pane %5")
