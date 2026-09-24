@@ -3,6 +3,7 @@
 import argparse
 import inspect
 import json
+import platform
 import subprocess
 import shutil
 import sys
@@ -27,6 +28,75 @@ TESTABLE_FUNCTIONS = [
 
 # Agent launched by a bare `--with-agent` (or config `withAgent: true`).
 WITH_AGENT_DEFAULT = "claude"
+
+
+def _linux_distribution_ids() -> set[str]:
+    """Return IDs from /etc/os-release, including ID_LIKE values."""
+    try:
+        values = platform.freedesktop_os_release()
+    except OSError:
+        return set()
+    return {
+        value.lower()
+        for key in ("ID", "ID_LIKE")
+        for value in values.get(key, "").split()
+    }
+
+
+def _tmux_install_hint() -> str:
+    """Return the tmux installation command for the current platform."""
+    system = platform.system()
+    if system == "Darwin":
+        return "Install it with:\n  brew install tmux"
+    if system == "Linux":
+        distro_ids = _linux_distribution_ids()
+        if distro_ids & {"ubuntu", "debian", "linuxmint", "pop"}:
+            return "Install it with:\n  sudo apt update && sudo apt install tmux"
+        if distro_ids & {"fedora", "rhel", "centos", "rocky", "almalinux"}:
+            return "Install it with:\n  sudo dnf install tmux"
+        if distro_ids & {"arch", "manjaro"}:
+            return "Install it with:\n  sudo pacman -S tmux"
+        if distro_ids & {"alpine"}:
+            return "Install it with:\n  sudo apk add tmux"
+        if distro_ids & {"opensuse", "suse"}:
+            return "Install it with:\n  sudo zypper install tmux"
+        return (
+            "Install the `tmux` package with your Linux distribution's "
+            "package manager."
+        )
+    if system == "Windows":
+        return "Run tmux-mcp inside WSL, then install tmux in that Linux distribution."
+    return "See https://github.com/tmux/tmux/wiki/Installing"
+
+
+def _require_tmux() -> None:
+    """Exit with an actionable error instead of a subprocess traceback."""
+    if shutil.which("tmux") is not None:
+        return
+    print(
+        "Error: the required `tmux` executable was not found in PATH.\n"
+        "pipx installs Python packages only; it cannot install system packages.\n"
+        f"{_tmux_install_hint()}",
+        file=sys.stderr,
+    )
+    raise SystemExit(127)
+
+
+def cmd_doctor(_args) -> None:
+    """Check external programs required by tmux-mcp."""
+    tmux = shutil.which("tmux")
+    if tmux is None:
+        _require_tmux()
+
+    result = subprocess.run(
+        [tmux, "-V"], capture_output=True, text=True, check=False
+    )
+    version = (result.stdout or result.stderr).strip()
+    if result.returncode != 0:
+        print(f"Error: `{tmux} -V` failed: {version}", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"OK: {version} ({tmux})")
+    print(f"OK: Python {platform.python_version()} ({sys.executable})")
 
 
 def _resolve_flag(cli_value, config_value):
@@ -418,6 +488,12 @@ def main():
     )
     test_parser.set_defaults(func=cmd_test)
 
+    # doctor subcommand
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Check required external programs"
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
+
     # setup-agents subcommand
     setup_parser = subparsers.add_parser(
         "setup-agents",
@@ -426,6 +502,8 @@ def main():
     setup_parser.set_defaults(func=cmd_setup_agents)
 
     args = parser.parse_args()
+    if args.command in {"new", "test"}:
+        _require_tmux()
     args.func(args)
 
 

@@ -29,66 +29,73 @@ and finer control over the commands.
 ## Prerequisites
 
 * Python 3.10+
-* `tmux` installed on the system.
+* The **system `tmux` executable** on `PATH`.
+
+`tmux` is not a Python package. Consequently, pip and pipx cannot install it as
+a dependency of `tmux-mcp`; install it with the operating system's package
+manager first.
 
 ## Installation
 
-### On macOS
+### Ubuntu / Debian
 
-1. Install [tmux][1] if not already installed.
+```bash
+sudo apt update
+sudo apt install tmux pipx
+pipx ensurepath
+pipx install git+https://github.com/tomklino/tmux-mcp.git
+tmux-cli doctor
+```
 
-    ```
-    brew install tmux
-    ```
+### Fedora / RHEL
 
-2. Install [pipx][2]
+```bash
+sudo dnf install tmux pipx
+pipx ensurepath
+pipx install git+https://github.com/tomklino/tmux-mcp.git
+tmux-cli doctor
+```
 
-    ```
-    brew install pipx
-    pipx ensurepath
-    ```
+### Arch Linux
 
-3. Install `tmux-mcp` with pipx
+```bash
+sudo pacman -S tmux python-pipx
+pipx ensurepath
+pipx install git+https://github.com/tomklino/tmux-mcp.git
+tmux-cli doctor
+```
 
-    ```
-    pipx install git+https://github.com/tomklino/tmux-mcp.git
-    ```
+### macOS
 
-### On Linux
+```bash
+brew install tmux pipx
+pipx ensurepath
+pipx install git+https://github.com/tomklino/tmux-mcp.git
+tmux-cli doctor
+```
 
-1. Install [tmux][1] if not already installed.
-2. Install [pipx][2] with your distribution's package manager (`apt`, `rpm`, `snap`)
+Restart the shell after `pipx ensurepath` if `tmux-cli` is not found.
 
-    ```
-    pipx ensurepath
-    ```
+### Windows
 
-3. Install `tmux-mcp` with pipx
+Native Windows is not supported because tmux requires a Unix-like environment.
+Use [WSL][3], run the Ubuntu / Debian instructions above inside WSL, and run the
+MCP client in (or configure it to invoke commands in) that same WSL environment.
 
-    ```
-    pipx install git+https://github.com/tomklino/tmux-mcp.git
-    ```
+### Why doesn't pipx install tmux?
 
-### On Windows
-
-1. Install [tmux][1] if not already installed.
-2. Intall [pipx][2]
-
-    ```
-    scoop install pipx
-    pipx ensurepath
-    ```
-
-3. Install `tmux-mcp` with pipx
-
-    ```
-    pipx install git+https://github.com/tomklino/tmux-mcp.git
-    ```
-
+pipx successfully installs this project's Python package and exposes
+`tmux-cli` and `tmux-mcp-server`. It deliberately does not manage OS packages.
+If `tmux-cli doctor` reports that tmux is missing, install tmux using one of the
+commands above. `tmux-cli new` also performs this check and prints an actionable
+message rather than a Python traceback.
 
 ### Client Configuration
 
-To use the server with an MCP client, add it to your configuration. Make sure to provide the absolute path to the `tmux_mcp.py` script.
+To use the server with an MCP client, configure the installed
+`tmux-mcp-server` executable. No source checkout or path to a Python script is
+needed. Run `command -v tmux-mcp-server` if your client does not inherit the
+shell's pipx `PATH`, and use that absolute executable path in its configuration.
 
 It's recommended to copy or reference the `AGENTS.md` file contents to the
 agent's instructions as it helps the agent use the safety guards in situations
@@ -99,7 +106,7 @@ where they are required.
 You can add the MCP server to Claude Code using the CLI:
 
 ```bash
-claude mcp add tmux python3 /absolute/path/to/tmux-mcp/tmux_mcp.py
+claude mcp add --scope user tmux tmux-mcp-server
 ```
 
 Or add the following to your `~/.claude.json` within your project's `mcpServers` object:
@@ -107,8 +114,8 @@ Or add the following to your `~/.claude.json` within your project's `mcpServers`
 ```json
 "tmux": {
   "type": "stdio",
-  "command": "python3",
-  "args": ["/absolute/path/to/tmux-mcp/tmux_mcp.py"],
+  "command": "tmux-mcp-server",
+  "args": [],
   "env": {}
 }
 ```
@@ -121,7 +128,7 @@ Add the following to your OpenCode configuration file located at `~/.config/open
 "mcp": {
   "tmux": {
     "type": "local",
-    "command": ["python3", "/absolute/path/to/tmux-mcp/tmux_mcp.py"],
+    "command": ["tmux-mcp-server"],
     "enabled": true
   }
 }
@@ -141,8 +148,8 @@ Then, add the following to your `~/.pi/agent/mcp.json` or project-specific `.pi/
 {
   "mcpServers": {
     "tmux": {
-      "command": "python3",
-      "args": ["/absolute/path/to/tmux-mcp/tmux_mcp.py"]
+      "command": "tmux-mcp-server",
+      "args": []
     }
   }
 }
@@ -157,7 +164,7 @@ When you share a tmux session with an AI agent, **permission modes** let you con
 Create sessions with:
 
 ```bash
-./tmux_cli.py new <name>
+tmux-cli new <name>
 ```
 
 The session will start by default on "deny", by won't let the agent any permissions.
@@ -182,11 +189,14 @@ Environment override (optional): set `TMUX_MCP_PERMISSIONS_FILE` to use a custom
 
 ### CLI Utility
 
-The project includes a CLI utility `tmux_cli.py` for managing sessions:
+The installed `tmux-cli` utility manages sessions:
 
 ```bash
+# Check that the non-Python dependency is available
+tmux-cli doctor
+
 # Create a new session with the custom prompt used by the MCP
-./tmux_cli.py new green
+tmux-cli new green
 ```
 
 #### Recording Sessions
@@ -238,3 +248,4 @@ it runs.
 [asciinema]: https://docs.asciinema.org/getting-started
 [1]: https://github.com/tmux/tmux/wiki/installing
 [2]: https://pipx.pypa.io/stable/how-to/install-pipx.html
+[3]: https://learn.microsoft.com/windows/wsl/install

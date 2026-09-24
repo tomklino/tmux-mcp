@@ -278,6 +278,42 @@ class TestTmuxCli(unittest.TestCase):
         )
 
 
+class TestPrerequisiteChecks(unittest.TestCase):
+    @mock.patch('tmux_cli.shutil.which', return_value=None)
+    @mock.patch('tmux_cli.platform.system', return_value='Linux')
+    @mock.patch(
+        'tmux_cli.platform.freedesktop_os_release',
+        return_value={'ID': 'ubuntu', 'ID_LIKE': 'debian'},
+    )
+    @mock.patch('sys.stderr', new_callable=StringIO)
+    def test_require_tmux_has_actionable_linux_error(
+        self, mock_stderr, _mock_os_release, _mock_system, _mock_which
+    ):
+        with self.assertRaises(SystemExit) as exc:
+            tmux_cli._require_tmux()
+
+        self.assertEqual(exc.exception.code, 127)
+        message = mock_stderr.getvalue()
+        self.assertIn('`tmux` executable was not found', message)
+        self.assertIn('sudo apt install tmux', message)
+        self.assertNotIn('Traceback', message)
+
+    @mock.patch('tmux_cli.shutil.which', return_value='/usr/bin/tmux')
+    @mock.patch('tmux_cli.subprocess.run')
+    @mock.patch('tmux_cli.print')
+    def test_doctor_reports_tmux_version(self, mock_print, mock_run, _mock_which):
+        mock_run.return_value = subprocess.CompletedProcess(
+            ['/usr/bin/tmux', '-V'], 0, stdout='tmux 3.6a\n', stderr=''
+        )
+
+        tmux_cli.cmd_doctor(None)
+
+        mock_run.assert_called_once_with(
+            ['/usr/bin/tmux', '-V'], capture_output=True, text=True, check=False
+        )
+        mock_print.assert_any_call('OK: tmux 3.6a (/usr/bin/tmux)')
+
+
 if __name__ == '__main__':
     unittest.main()
 
