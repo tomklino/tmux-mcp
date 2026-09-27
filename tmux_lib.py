@@ -149,7 +149,7 @@ class PromptVerificationError(Exception):
 
 
 # PS1 prompt to be set in the tmux session.
-TMUX_PS1 = r"·$(kube_ps1) %c %(?.%F{green}__>.%F{red}__>)%f "
+TMUX_PS1 = r"· %c %(?.%F{green}__>.%F{red}__>)%f "
 
 
 def _repo_script_path(script_name: str) -> str:
