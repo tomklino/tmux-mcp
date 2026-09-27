@@ -1,0 +1,6 @@
+# tmux-mcp configuration
+# Uncomment and edit any option to override the default.
+
+# Default tmux socket name used by tmux-cli and the MCP server.
+# Can be overridden at runtime with the TMUX_MCP_SOCKET environment variable.
+# defaultSocket: tmux-mcp
