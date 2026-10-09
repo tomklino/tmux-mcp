@@ -4,6 +4,9 @@ MCP server for interacting with tmux sessions.
 Provides tools to read terminal output and execute commands in tmux sessions.
 """
 
+import asyncio
+from functools import wraps
+
 from mcp.server.fastmcp import FastMCP
 
 from tmux_mcp import tmux_lib
@@ -13,7 +16,23 @@ from tmux_mcp import permissions
 mcp = FastMCP("tmux")
 
 
-@mcp.tool()
+def _threaded_tool(fn):
+    """Register blocking tools without blocking FastMCP's event loop.
+
+    FastMCP invokes synchronous tools inline. A long command waiter would
+    prevent reads (and client cancellation messages) from being processed.
+    Keep the Python API synchronous, but register an async worker wrapper.
+    wraps preserves the signature, annotations and documentation for MCP.
+    """
+    @wraps(fn)
+    async def run(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    mcp.tool()(run)
+    return fn
+
+
+@_threaded_tool
 def get_last_lines(session_name: str, lines: int = 10) -> str:
     """
     Get the last N lines from a tmux terminal session.
@@ -29,7 +48,7 @@ def get_last_lines(session_name: str, lines: int = 10) -> str:
     return tmux_lib.get_n_last_lines(session_name, lines)
 
 
-@mcp.tool()
+@_threaded_tool
 def send_command(
     session_name: str, command: str, prompt_verify_string: str | None = None
 ) -> str:
@@ -51,7 +70,7 @@ def send_command(
     return "sent" if success else "prompt_mismatch"
 
 
-@mcp.tool()
+@_threaded_tool
 def send_interrupt(session_name: str) -> str:
     """
     Send CTRL+C interrupt to the terminal.
@@ -66,7 +85,7 @@ def send_interrupt(session_name: str) -> str:
     return "sent"
 
 
-@mcp.tool()
+@_threaded_tool
 def execute_command(
     session_name: str,
     command: str,
@@ -114,7 +133,7 @@ def execute_command(
         return {"prompt": "", "command": "", "output": "", "status": "prompt_mismatch"}
 
 
-@mcp.tool()
+@_threaded_tool
 def wait_for_completion(session_name: str, timeout: float = 30.0) -> dict:
     """
     Wait for a previously sent command to complete.
@@ -142,7 +161,7 @@ def wait_for_completion(session_name: str, timeout: float = 30.0) -> dict:
     }
 
 
-@mcp.tool()
+@_threaded_tool
 def get_last_command_output(session_name: str) -> dict:
     """
     Extract the last command and its output from the terminal.
