@@ -404,7 +404,11 @@ def create_tmux_session(
         # Split side-by-side from the shell pane: shell stays left, agent
         # opens right and becomes the active pane (tmux default).
         agent_context = _agent_terminal_context(session_name)
-        agent_cmd = f"{agent} --append-system-prompt {shlex.quote(agent_context)}"
+        agent_options = ""
+        if agent == "pi":
+            agent_options = " --exclude-tools bash"
+            agent_context += "\nbash is not allowed - for any command use tmux-mcp"
+        agent_cmd = f"{agent}{agent_options} --append-system-prompt {shlex.quote(agent_context)}"
         subprocess.run(
             ["tmux", "-L", socket, "split-window", "-h",
              "-t", shell_pane or session_name, agent_cmd],

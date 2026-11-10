@@ -598,6 +598,22 @@ class TestCreateSessionTargetPaneAndClaude:
         assert "--append-system-prompt" in joined
         assert "green" in joined
 
+    def test_with_pi_disables_bash_and_appends_instruction(self, monkeypatch):
+        import shlex
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
+        monkeypatch.setattr(permissions, "ensure_session_registered", lambda *_: None)
+
+        tmux_lib.create_tmux_session("green", with_agent=True, agent="pi")
+
+        split = [c for c in calls if "split-window" in c]
+        args = shlex.split(split[0][-1])
+        assert args[:3] == ["pi", "--exclude-tools", "bash"]
+        assert args[3] == "--append-system-prompt"
+        assert "green" in args[4]
+        assert "bash is not allowed - for any command use tmux-mcp" in args[4].splitlines()
+
     def test_with_custom_agent(self, monkeypatch):
         calls: list[list[str]] = []
         monkeypatch.setattr(tmux_lib.subprocess, "run", self._run_factory(calls))
@@ -610,6 +626,8 @@ class TestCreateSessionTargetPaneAndClaude:
         joined = " ".join(split[0])
         assert "myagent" in joined
         assert "claude" not in joined
+        assert "--exclude-tools" not in joined
+        assert "bash is not allowed" not in joined
 
 
 class TestResolveTarget:
